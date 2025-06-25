@@ -32,7 +32,7 @@ def generate_layout() -> Layout:
     )
     layout["header"].update(
         Align.center(
-            Text("🚀 DockedUp - Real-time Docker Container Monitor", justify="center", style="bold magenta"),
+            Text("🚀 DockedUp - Real-time Docker Compose Monitor", justify="center", style="bold magenta"),
             vertical="middle"
         )
     )
