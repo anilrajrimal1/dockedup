@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "dockedup"
+version = "0.1.0"
+description = "Your live, beautiful Docker Compose monitor CLI tool."
+authors = ["Anil Raj Rimal <anilrajrimal@gmail.com>"]
+readme = "README.md"
+license = "MIT"
+homepage = "https://github.com/anilrajrimal1/dockedup"
+repository = "https://github.com/anilrajrimal1/dockedup"
+keywords = ["docker", "devops", "cli", "monitor", "compose", "terminal", "typer", "python"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Topic :: System :: Monitoring",
+    "Topic :: Software Development :: Build Tools",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+typer = {extras = ["all"], version = "^0.9.0"}
+docker = "^7.0.0"
+rich = "^13.7.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-mock = "^3.12.0"
+
+[tool.poetry.scripts]
+dockedup = "dockedup.cli:app"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
