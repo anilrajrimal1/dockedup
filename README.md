@@ -1,67 +1,99 @@
-# 🚀 DockedUp
+# DockedUp
 
 **htop for your Docker Compose stack.**
-
-DockedUp is a command-line tool that provides a live, beautiful, and human-friendly monitor for your Docker and Docker Compose containers. It's designed for developers and DevOps engineers who want a quick, real-time overview of their containerized environments without the noise of `docker ps`.
 
 <div align="center">
   <img src="https://github.com/user-attachments/assets/e0abd228-2a89-4f17-8530-1483d1aa97f3" alt="DockedUp Demo">
 </div>
 
-  <!-- Replace with a real GIF! -->
+---
+[![PyPI version](https://img.shields.io/pypi/v/dockedup.svg)](https://pypi.org/project/dockedup/)
+[![Python versions](https://img.shields.io/pypi/pyversions/dockedup.svg)](https://pypi.org/project/dockedup/)
+[![License](https://img.shields.io/pypi/l/dockedup.svg)](https://github.com/anilrajrimal1/dockedup/blob/master/LICENSE)
+
+**DockedUp** is an interactive command-line tool that provides a live, beautiful, and human-friendly monitor for your Docker containers. It's designed for developers and DevOps engineers who want a quick, real-time overview of their containerized environments without the noise of `docker ps` and the hassle of switching terminals.
 
 ### Problem It Solves
 
-`docker ps` is functional, but it falls short when you need to:
-- Monitor container status and health in **real-time**.
-- Quickly detect if a service is **restarting** or **unhealthy**.
-- Understand **port mappings** in a clean, readable way.
-- Group containers logically by their **Compose project**.
+`docker stats` and `docker ps` are functional, but fall short when you need to:
+- **Monitor** container status, health, and resource usage in one unified view.
+- **Act** on a container (view logs, restart, shell in) without breaking your workflow.
+- **Understand** a complex `docker-compose` stack at a glance.
 
-DockedUp solves these problems by presenting your container information in a continuously updating, color-coded, and organized table right in your terminal.
+DockedUp solves these problems by presenting your container information in a continuously updating, color-coded, and interactive dashboard right in your terminal.
 
-### Core Features
+### Key Features
 
--   **Live Monitoring**: Auto-refreshing container table every few seconds.
--   **Emoji + Colors**: Clearly shows container status (`Up`, `Down`, `Restarting`) and health checks (`Healthy`, `Unhealthy`) with visual cues.
--   **Readable Port Mapping**: Lists exposed and mapped ports in a simple `host->container` format.
--   **Compose Project Grouping**: Automatically groups containers by their `com.docker.compose.project` label.
--    graceful **Graceful Exit**: `Ctrl+C` to cleanly stop the monitor.
--   **One Command**: `dockedup monitor` to start instantly.
--   **PyPI Package**: Simple one-liner installation.
+- **Real-Time Monitoring**: Live-updating data for status, uptime, CPU, and Memory.
+- **Compose Project Grouping**: Automatically groups containers by their `docker-compose` project.
+- **Emoji + Colors**: Clearly shows container status (`Up`, `Down`, `Restarting`) and health (`Healthy`, `Unhealthy`) with visual cues.
+- **Interactive Controls**: Select containers with arrow keys and use hotkeys to:
+    -  `l` → View live logs (`docker logs -f`).
+    -  `r` → Restart a container (with confirmation).
+    -  `x` → Stop a container (with confirmation).
+    -  `s` → Open a shell (`/bin/sh`) inside a container.
+- **PyPI Package**: Simple one-liner installation.
 
 ### Installation
 
-DockedUp is available on PyPI and can be installed with `pip`.
+DockedUp is available on PyPI. It is highly recommended to install CLI tools in an isolated environment using `pipx`.
 
-```bash
-pip install dockedup
-```
-It is highly recommended to install CLI tools in an isolated environment using `pipx`:
 ```bash
 pipx install dockedup
 ```
 
-### usage
-
-Simply run the `monitor` command:
+Alternatively, you can use `pip`:
 ```bash
-dockedup monitor
+pip install dockedup
 ```
 
-You can customize the refresh rate (default is 2 seconds):
+###  usage
+
+Simply run the command to start the interactive monitor:
 ```bash
-dockedup monitor --refresh 5  # Refresh every 5 seconds
+dockedup
 ```
+Once running, use the following keys:
+-  **↑/↓**: Navigate between containers.
+-  **l**: Show live logs for the selected container.
+-  **r**: Restart the selected container.
+-  **x**: Stop the selected container.
+-  **s**: Open a shell in the selected container.
+-  **q**: Quit the application.
 
-### Tech Stack
+### Developer's Guide
 
--   **Python 3.10+**
--   **Typer** for the CLI interface.
--   **Docker SDK** for interfacing with the Docker daemon.
--   **Rich** for beautiful terminal rendering, tables, and colors.
--   **Poetry** for packaging and dependency management.
--   **pytest** for unit testing.
+Interested in contributing or running the project locally?
+
+**Prerequisites:**
+-  Git
+-  Python 3.10+
+-  [Poetry](https://python-poetry.org/)
+
+**Setup:**
+1.  Clone the repository:
+    ```bash
+    git clone https://github.com/anilrajrimal1/dockedup.git
+    cd dockedup
+    ```
+2.  Install dependencies:
+    ```bash
+    poetry install
+    ```
+3.  Run the application locally:
+    ```bash
+    poetry run dockedup
+    ```
+4.  Run the tests:
+    ```bash
+    poetry run pytest
+    ```
+
+### Contributing
+
+Contributions are welcome! Whether it's a bug report, a feature request, or a pull request, we'd love to hear from you.
+
+Please read our [**Contributing Guide**](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
 
 ### License
 
