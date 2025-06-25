@@ -9,7 +9,6 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.layout import Layout
 from rich.align import Align
-from rich.spinner import Spinner
 from rich.text import Text
 
 from docker.errors import DockerException
@@ -59,6 +58,8 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
         table.add_column("Status", justify="left")
         table.add_column("Health", justify="left")
         table.add_column("Ports", justify="left")
+        table.add_column("CPU %", justify="right")
+        table.add_column("MEM USAGE / LIMIT", justify="right")
 
         for container in containers:
             table.add_row(
@@ -66,6 +67,8 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
                 container["status"],
                 container["health"],
                 container["ports"],
+                container["cpu"],
+                container["memory"],
             )
         tables.append(Panel(table, border_style="dim blue", expand=True))
 
@@ -91,21 +94,22 @@ def main(
 
     with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
         try:
+            # Initial display before the loop starts
+            layout["main"].update(Align.center(Text("Fetching initial data...", style="green"), vertical="middle"))
+            live.update(layout)
+
             while True:
+                groups = get_grouped_containers(client)
+                table_layout = generate_tables_from_groups(groups)
+
+                layout["main"].update(table_layout)
                 layout["footer"].update(
                     Align.right(f"🔁 Refreshing every {refresh_rate}s... Press Ctrl+C to exit.")
                 )
-
-                spinner = Spinner("dots", text=Text("Fetching container data...", style="green"))
-                layout["main"].update(Align.center(spinner, vertical="middle"))
+                
                 live.update(layout)
-
-                groups = get_grouped_containers(client)
-                table_layout = generate_tables_from_groups(groups)
-                layout["main"].update(table_layout)
-                live.update(layout)
-
                 time.sleep(refresh_rate)
+
         except KeyboardInterrupt:
             console.print("\n[bold yellow]👋 Exiting DockedUp. Goodbye![/bold yellow]")
         except DockerException as e:
