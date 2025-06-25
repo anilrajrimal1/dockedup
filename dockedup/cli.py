@@ -41,10 +41,14 @@ class AppState:
                     return
         self.move_selection(0)
 
-    def get_selected_container_id(self) -> str | None:
+    def get_selected_container(self) -> Dict | None:
         if self.all_containers and 0 <= self.selected_index < len(self.all_containers):
-            return self.all_containers[self.selected_index].get('id')
+            return self.all_containers[self.selected_index]
         return None
+
+    def get_selected_container_id(self) -> str | None:
+        container = self.get_selected_container()
+        return container.get('id') if container else None
 
     def move_selection(self, delta: int):
         if not self.all_containers:
@@ -52,19 +56,28 @@ class AppState:
             return
         self.selected_index = (self.selected_index + delta) % len(self.all_containers)
 
-def run_docker_command(live_display: Live, command: List[str]):
-    """Pauses the live display to run a Docker command in the foreground."""
+def run_docker_command(live_display: Live, command: List[str], container_name: str, confirm: bool = False):
+    """Pauses the live display to run a Docker command, with an optional confirmation prompt."""
     live_display.stop()
     try:
+        if confirm:
+            action = command[1].capitalize()
+            console.print(f"\n[bold yellow]Are you sure you want to {action} container '{container_name}'? (y/n)[/bold yellow]")
+            key = readchar.readkey().lower()
+            if key != 'y':
+                console.print("[green]Aborted.[/green]")
+                time.sleep(1)
+                return
+
         subprocess.run(command)
-        # For non-interactive commands, we can add a pause.
         if "-f" not in command and "exec" not in command:
             console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
     except Exception as e:
         console.print(f"[bold red]Failed to execute command:[/bold red]\n{e}")
         console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
     finally:
-        live_display.start() # Resume the live display
+        console.clear()
+        live_display.start()
 
 def generate_layout() -> Layout:
     layout = Layout(name="root")
@@ -73,7 +86,7 @@ def generate_layout() -> Layout:
         Layout(ratio=1, name="main"),
         Layout(size=1, name="footer")
     )
-    layout["header"].update(Align.center(Text("🚀 DockedUp - Interactive Docker Compose Monitor", justify="center", style="bold magenta")))
+    layout["header"].update(Align.center(Text(" DockedUp - Interactive Docker Compose Monitor", justify="center", style="bold magenta")))
     return layout
 
 def generate_tables_from_groups(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
@@ -108,10 +121,14 @@ def generate_tables_from_groups(groups: Dict[str, List[Dict]], state: AppState) 
     layout.split_column(*tables)
     return layout
 
+def update_footer(layout: Layout, state: AppState):
+    footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate"
+    if state.get_selected_container():
+        footer_text += " | [b]L[/b]ogs | [b]R[/b]estart | [b]S[/b]hell | [b]X[/b] Stop"
+    layout["footer"].update(Align.center(footer_text))
+
 @app.callback(invoke_without_command=True)
-def main(
-    refresh_rate: Annotated[float, typer.Option("--refresh", "-r", help="UI refresh rate in seconds.")] = 1.0,
-):
+def main():
     try:
         client = docker.from_env(timeout=5); client.ping()
     except DockerException as e:
@@ -120,6 +137,7 @@ def main(
     monitor = ContainerMonitor(client)
     app_state = AppState([])
     layout = generate_layout()
+    update_footer(layout, app_state) # Initial footer setup to prevent glitch
 
     try:
         with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
@@ -130,6 +148,7 @@ def main(
             grouped_data = monitor.get_grouped_containers()
             table_layout = generate_tables_from_groups(grouped_data, app_state)
             layout["main"].update(table_layout)
+            update_footer(layout, app_state)
             live.refresh()
             
             while not should_quit:
@@ -139,28 +158,27 @@ def main(
                 elif key == readchar.key.DOWN: app_state.move_selection(1)
                 elif key.lower() == 'q': should_quit = True
                 else:
-                    container_id = app_state.get_selected_container_id()
-                    if container_id:
-                        if key.lower() == 'l': run_docker_command(live, ["docker", "logs", "-f", "--tail", "100", container_id])
-                        elif key.lower() == 'r': run_docker_command(live, ["docker", "restart", container_id])
-                        elif key.lower() == 'x': run_docker_command(live, ["docker", "stop", container_id])
-                        elif key.lower() == 's': run_docker_command(live, ["docker", "exec", "-it", container_id, "/bin/sh"])
+                    container = app_state.get_selected_container()
+                    if container:
+                        container_id = container['id']
+                        container_name = container['name']
+                        if key.lower() == 'l': run_docker_command(live, ["docker", "logs", "-f", "--tail", "100", container_id], container_name)
+                        elif key.lower() == 'r': run_docker_command(live, ["docker", "restart", container_id], container_name, confirm=True)
+                        elif key.lower() == 'x': run_docker_command(live, ["docker", "stop", container_id], container_name, confirm=True)
+                        elif key.lower() == 's': run_docker_command(live, ["docker", "exec", "-it", container_id, "/bin/sh"], container_name)
                 
                 # Redraw after every action
                 grouped_data = monitor.get_grouped_containers()
                 table_layout = generate_tables_from_groups(grouped_data, app_state)
                 layout["main"].update(table_layout)
-                footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate"
-                if app_state.get_selected_container_id():
-                    footer_text += " | [b]L[/b]ogs | [b]R[/b]estart | [b]S[/b]hell | [b]X[/b] Stop"
-                layout["footer"].update(Align.center(footer_text))
+                update_footer(layout, app_state)
                 live.refresh()
 
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         monitor.stop()
-        console.print("\n[bold yellow]👋 Exiting DockedUp. Goodbye![/bold yellow]")
+        console.print("\n[bold yellow] See You Soon![/bold yellow]")
 
 if __name__ == "__main__":
     app()
