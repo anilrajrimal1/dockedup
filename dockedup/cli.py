@@ -32,6 +32,7 @@ class AppState:
         self.all_containers: List[Dict] = []
         self.selected_index: int = 0
         self.lock = threading.Lock()
+        self.ui_updated_event = threading.Event()
 
     def update_containers(self, containers: List[Dict]):
         with self.lock:
@@ -58,6 +59,7 @@ class AppState:
     def move_selection(self, delta: int):
         with self.lock:
             self._move_selection_unsafe(delta)
+        self.ui_updated_event.set()
 
     def _move_selection_unsafe(self, delta: int):
         if not self.all_containers:
@@ -94,12 +96,9 @@ def generate_layout() -> Layout:
     layout["header"].update(Align.center(Text(" DockedUp - Interactive Docker Compose Monitor", justify="center", style="bold magenta")))
     return layout
 
-def generate_tables_from_groups(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
-    layout = Layout()
-    if not groups:
-        layout.update(Align.center(Text("No containers found.", style="yellow"), vertical="middle"))
-        return layout
-
+def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
+    """Builds the entire UI renderable from the current state."""
+    layout = generate_layout()
     flat_list = [c for project_containers in groups.values() for c in project_containers]
     state.update_containers(flat_list)
 
@@ -125,14 +124,17 @@ def generate_tables_from_groups(groups: Dict[str, List[Dict]], state: AppState) 
             current_flat_index += 1
         tables.append(Panel(table, border_style="dim blue", expand=True))
     
-    layout.split_column(*tables)
-    return layout
+    if not groups:
+        layout["main"].update(Align.center(Text("No containers found.", style="yellow"), vertical="middle"))
+    else:
+        layout["main"].split_column(*tables)
 
-def update_footer(layout: Layout, state: AppState):
     footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate"
     if state.get_selected_container():
         footer_text += " | [b]L[/b]ogs | [b]R[/b]estart | [b]S[/b]hell | [b]X[/b] Stop"
     layout["footer"].update(Align.center(footer_text))
+    
+    return layout
 
 @app.callback(invoke_without_command=True)
 def main(
@@ -145,7 +147,6 @@ def main(
 
     monitor = ContainerMonitor(client)
     app_state = AppState()
-    layout = generate_layout()
     should_quit = threading.Event()
 
     def input_worker(live: Live):
@@ -154,7 +155,7 @@ def main(
                 key = readchar.readkey()
                 if key == readchar.key.UP: app_state.move_selection(-1)
                 elif key == readchar.key.DOWN: app_state.move_selection(1)
-                elif key.lower() == 'q': should_quit.set()
+                elif key.lower() == 'q': should_quit.set(); app_state.ui_updated_event.set()
                 else:
                     container = app_state.get_selected_container()
                     if container:
@@ -163,31 +164,31 @@ def main(
                         elif key.lower() == 'r': run_docker_command(live, ["docker", "restart", container_id], container_name, confirm=True)
                         elif key.lower() == 'x': run_docker_command(live, ["docker", "stop", container_id], container_name, confirm=True)
                         elif key.lower() == 's': run_docker_command(live, ["docker", "exec", "-it", container_id, "/bin/sh"], container_name)
+                        app_state.ui_updated_event.set() # Force refresh after returning from command
             except (KeyboardInterrupt):
                 should_quit.set()
 
     try:
-        with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
+        with Live(console=console, screen=True, transient=True, redirect_stderr=False, auto_refresh=False) as live:
             monitor.run()
-            
             input_thread = threading.Thread(target=input_worker, args=(live,), daemon=True)
             input_thread.start()
 
             while not should_quit.is_set():
                 grouped_data = monitor.get_grouped_containers()
-                table_layout = generate_tables_from_groups(grouped_data, app_state)
-                layout["main"].update(table_layout)
-                update_footer(layout, app_state)
-                # The 'Live' object handles its own refresh, but we need to sleep
-                # to prevent this loop from pegging the CPU.
-                time.sleep(refresh_rate)
+                ui_layout = generate_ui(grouped_data, app_state)
+                live.update(ui_layout, refresh=True)
+                
+                # Wait for a UI update event OR a timeout
+                app_state.ui_updated_event.wait(timeout=refresh_rate)
+                app_state.ui_updated_event.clear()
 
-    except (KeyboardInterrupt, SystemExit):
-        pass
+    except Exception as e:
+        console.print_exception()
     finally:
         should_quit.set()
         monitor.stop()
-        console.print("\n[bold yellow]See You Soon![/bold yellow]")
+        console.print("\n[bold yellow]See you soon![/bold yellow]")
 
 if __name__ == "__main__":
     app()
