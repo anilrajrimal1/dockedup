@@ -59,6 +59,8 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
         table.add_column("Status", justify="left")
         table.add_column("Health", justify="left")
         table.add_column("Ports", justify="left")
+        table.add_column("CPU %", justify="right")
+        table.add_column("MEM USAGE / LIMIT", justify="right")
 
         for container in containers:
             table.add_row(
@@ -66,6 +68,8 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
                 container["status"],
                 container["health"],
                 container["ports"],
+                container["cpu"],
+                container["memory"],
             )
         tables.append(Panel(table, border_style="dim blue", expand=True))
 
