@@ -10,10 +10,11 @@ from rich.panel import Panel
 from rich.layout import Layout
 from rich.align import Align
 from rich.text import Text
-
+import docker
 from docker.errors import DockerException
 
-from .docker_monitor import get_docker_client, get_grouped_containers, FormattedContainer
+from .docker_monitor import ContainerMonitor
+from .utils import format_uptime
 
 app = typer.Typer(
     name="dockedup",
@@ -23,7 +24,6 @@ app = typer.Typer(
 console = Console()
 
 def generate_layout() -> Layout:
-    """Define the main layout for the application."""
     layout = Layout(name="root")
     layout.split(
         Layout(name="header", size=3),
@@ -32,16 +32,14 @@ def generate_layout() -> Layout:
     )
     layout["header"].update(
         Align.center(
-            Text("🚀 DockedUp - Your Docker Compose Monitor", justify="center", style="bold magenta"),
+            Text("🚀 DockedUp - Real-time Docker Compose Monitor", justify="center", style="bold magenta"),
             vertical="middle"
         )
     )
     return layout
 
-def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> Layout:
-    """Create a Rich Table for each Compose project group."""
+def generate_tables_from_groups(groups: Dict[str, List[Dict]]) -> Layout:
     layout = Layout()
-
     if not groups:
         layout.update(Align.center(Text("No containers found.", style="yellow"), vertical="middle"))
         return layout
@@ -50,12 +48,11 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
     for project_name, containers in groups.items():
         table = Table(
             title=f"Project: [bold cyan]{project_name}[/bold cyan]",
-            title_style="",
-            border_style="blue",
-            expand=True,
+            title_style="", border_style="blue", expand=True
         )
         table.add_column("Container", style="cyan", no_wrap=True)
         table.add_column("Status", justify="left")
+        table.add_column("Uptime", justify="right")
         table.add_column("Health", justify="left")
         table.add_column("Ports", justify="left")
         table.add_column("CPU %", justify="right")
@@ -65,6 +62,7 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
             table.add_row(
                 container["name"],
                 container["status"],
+                format_uptime(container.get('started_at')),
                 container["health"],
                 container["ports"],
                 container["cpu"],
@@ -77,44 +75,38 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
 
 @app.callback(invoke_without_command=True)
 def main(
-    refresh_rate: Annotated[int, typer.Option(
-        "--refresh", "-r", help="Refresh rate in seconds."
-    )] = 2,
+    refresh_rate: Annotated[float, typer.Option(
+        "--refresh", "-r", help="UI refresh rate in seconds (data is real-time)."
+    )] = 0.5,
 ):
-    """
-    Monitor Docker containers in a live, beautiful table.
-    """
     try:
-        client = get_docker_client()
+        client = docker.from_env(timeout=5)
+        client.ping()
     except DockerException as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        console.print(f"[bold red]Error:[/bold red] Failed to connect to Docker. Is it running?\n{e}")
         raise typer.Exit(code=1)
 
+    monitor = ContainerMonitor(client)
     layout = generate_layout()
 
-    with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
-        try:
-            # Initial display before the loop starts
-            layout["main"].update(Align.center(Text("Fetching initial data...", style="green"), vertical="middle"))
-            live.update(layout)
-
-            while True:
-                groups = get_grouped_containers(client)
-                table_layout = generate_tables_from_groups(groups)
-
+    try:
+        with Live(layout, screen=True, transient=True, redirect_stderr=False, refresh_per_second=1/refresh_rate) as live:
+            monitor.run()
+            
+            while not monitor.stop_event.is_set():
+                grouped_data = monitor.get_grouped_containers()
+                table_layout = generate_tables_from_groups(grouped_data)
                 layout["main"].update(table_layout)
                 layout["footer"].update(
-                    Align.right(f"🔁 Refreshing every {refresh_rate}s... Press Ctrl+C to exit.")
+                    Align.right(f"⚡️ Real-time data | UI Refresh: {refresh_rate}s | Press Ctrl+C to exit")
                 )
-                
-                live.update(layout)
                 time.sleep(refresh_rate)
 
-        except KeyboardInterrupt:
-            console.print("\n[bold yellow]👋 Exiting DockedUp. Goodbye![/bold yellow]")
-        except DockerException as e:
-            console.print(f"\n[bold red]Error:[/bold red] Lost connection to Docker daemon: {e}")
-            raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        monitor.stop()
+        console.print("\n[bold yellow] Exiting DockedUp. 👋 ![/bold yellow]")
 
 if __name__ == "__main__":
     app()
