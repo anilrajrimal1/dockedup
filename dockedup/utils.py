@@ -43,7 +43,7 @@ def format_ports(port_data: Dict[str, Any]) -> str:
             
             parts.append(f"{ip_prefix}{host_port} -> {container_port}")
         else:
-            parts.append(f"{container_port} (exposed)")
+            parts.append(f"[dim]{container_port}[/dim]")
     
     return "\n".join(parts)
 
@@ -106,8 +106,8 @@ def calculate_cpu_percent(stats: Dict[str, Any]) -> str:
             elif percent > 50.0:
                 color = "yellow"
             
-            return f"[{color}]{percent:.1f}%[/{color}]"
+            return f"[{color}]{percent:.2f}%[/{color}]"
     except (KeyError, TypeError, ZeroDivisionError):
         return "[grey50]—[/grey50]"
     
-    return "[grey50]0.0%[/grey50]"
+    return "[grey50]0.00%[/grey50]"
