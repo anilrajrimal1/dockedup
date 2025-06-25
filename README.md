@@ -4,6 +4,10 @@
 
 DockedUp is a command-line tool that provides a live, beautiful, and human-friendly monitor for your Docker and Docker Compose containers. It's designed for developers and DevOps engineers who want a quick, real-time overview of their containerized environments without the noise of `docker ps`.
 
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/e0abd228-2a89-4f17-8530-1483d1aa97f3" alt="DockedUp Demo">
+</div>
+
   <!-- Replace with a real GIF! -->
 
 ### Problem It Solves
