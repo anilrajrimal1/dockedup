@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Tuple, Dict, Any, List
 
 def format_status(container_status: str, health_status: str | None) -> Tuple[str, str]:
@@ -52,6 +53,34 @@ def get_compose_project_name(labels: Dict[str, str]) -> str:
     Extracts the Docker Compose project name from container labels.
     """
     return labels.get("com.docker.compose.project", "(No Project)")
+
+def format_uptime(start_time_str: str | None) -> str:
+    """Formats a container's start time into a human-readable uptime string."""
+    if not start_time_str:
+        return "[grey50]—[/grey50]"
+
+    try:
+        # Handle different ISO 8601 formats from the Docker API
+        if start_time_str.endswith('Z'):
+            start_time_str = start_time_str[:-1] + "+00:00"
+        
+        start_time = datetime.fromisoformat(start_time_str)
+        now = datetime.now(timezone.utc)
+        delta = now - start_time
+        
+        seconds = delta.total_seconds()
+        
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            return f"{int(seconds / 60)}m"
+        elif seconds < 86400:
+            return f"{int(seconds / 3600)}h"
+        else:
+            return f"{int(seconds / 86400)}d"
+
+    except (ValueError, TypeError):
+        return "[grey50]—[/grey50]"
 
 def _format_bytes(size: int) -> str:
     """Helper to format bytes into KiB, MiB, GiB etc."""

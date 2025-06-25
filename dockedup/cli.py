@@ -56,6 +56,7 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
         )
         table.add_column("Container", style="cyan", no_wrap=True)
         table.add_column("Status", justify="left")
+        table.add_column("Uptime", justify="right")
         table.add_column("Health", justify="left")
         table.add_column("Ports", justify="left")
         table.add_column("CPU %", justify="right")
@@ -65,6 +66,7 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
             table.add_row(
                 container["name"],
                 container["status"],
+                container["uptime"],
                 container["health"],
                 container["ports"],
                 container["cpu"],
@@ -94,7 +96,6 @@ def main(
 
     with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
         try:
-            # Initial display before the loop starts
             layout["main"].update(Align.center(Text("Fetching initial data...", style="green"), vertical="middle"))
             live.update(layout)
 

@@ -9,7 +9,8 @@ from .utils import (
     format_ports, 
     get_compose_project_name,
     format_memory_stats,
-    calculate_cpu_percent
+    calculate_cpu_percent,
+    format_uptime
 )
 
 class FormattedContainer(TypedDict):
@@ -21,6 +22,7 @@ class FormattedContainer(TypedDict):
     project: str
     cpu: str
     memory: str
+    uptime: str
 
 def get_docker_client() -> docker.DockerClient:
     """Initializes and returns a Docker client."""
@@ -46,6 +48,8 @@ def get_grouped_containers(client: docker.DockerClient) -> Dict[str, List[Format
             health_status=health.get("Status")
         )
 
+        uptime_display = format_uptime(state.get("StartedAt"))
+
         cpu_display = "[grey50]—[/grey50]"
         mem_display = "[grey50]—[/grey50]"
         if container.status == 'running':
@@ -64,6 +68,7 @@ def get_grouped_containers(client: docker.DockerClient) -> Dict[str, List[Format
             project=get_compose_project_name(container.labels),
             cpu=cpu_display,
             memory=mem_display,
+            uptime=uptime_display
         )
         grouped_containers[formatted['project']].append(formatted)
 
