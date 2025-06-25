@@ -1,5 +1,6 @@
 import time
 import subprocess
+import threading
 from typing_extensions import Annotated
 from typing import Dict, List
 
@@ -26,38 +27,46 @@ app = typer.Typer(
 console = Console()
 
 class AppState:
-    """Manages the application's interactive state."""
-    def __init__(self, containers: List[Dict]):
-        self.all_containers = containers
-        self.selected_index = 0
-    
+    """Manages the application's shared interactive state with thread-safety."""
+    def __init__(self):
+        self.all_containers: List[Dict] = []
+        self.selected_index: int = 0
+        self.lock = threading.Lock()
+
     def update_containers(self, containers: List[Dict]):
-        current_id = self.get_selected_container_id()
-        self.all_containers = containers
-        if current_id:
-            for i, c in enumerate(self.all_containers):
-                if c.get('id') == current_id:
-                    self.selected_index = i
-                    return
-        self.move_selection(0)
+        with self.lock:
+            current_id = self._get_selected_container_id_unsafe()
+            self.all_containers = containers
+            if current_id:
+                for i, c in enumerate(self.all_containers):
+                    if c.get('id') == current_id:
+                        self.selected_index = i
+                        return
+            self._move_selection_unsafe(0)
 
     def get_selected_container(self) -> Dict | None:
-        if self.all_containers and 0 <= self.selected_index < len(self.all_containers):
-            return self.all_containers[self.selected_index]
+        with self.lock:
+            if self.all_containers and 0 <= self.selected_index < len(self.all_containers):
+                return self.all_containers[self.selected_index]
         return None
 
-    def get_selected_container_id(self) -> str | None:
-        container = self.get_selected_container()
-        return container.get('id') if container else None
+    def _get_selected_container_id_unsafe(self) -> str | None:
+        if self.all_containers and 0 <= self.selected_index < len(self.all_containers):
+            return self.all_containers[self.selected_index].get('id')
+        return None
 
     def move_selection(self, delta: int):
+        with self.lock:
+            self._move_selection_unsafe(delta)
+
+    def _move_selection_unsafe(self, delta: int):
         if not self.all_containers:
             self.selected_index = 0
             return
         self.selected_index = (self.selected_index + delta) % len(self.all_containers)
 
 def run_docker_command(live_display: Live, command: List[str], container_name: str, confirm: bool = False):
-    """Pauses the live display to run a Docker command, with an optional confirmation prompt."""
+    """Pauses the live display to run a Docker command in the foreground."""
     live_display.stop()
     try:
         if confirm:
@@ -81,11 +90,7 @@ def run_docker_command(live_display: Live, command: List[str], container_name: s
 
 def generate_layout() -> Layout:
     layout = Layout(name="root")
-    layout.split(
-        Layout(name="header", size=3),
-        Layout(ratio=1, name="main"),
-        Layout(size=1, name="footer")
-    )
+    layout.split(Layout(name="header", size=3), Layout(ratio=1, name="main"), Layout(size=1, name="footer"))
     layout["header"].update(Align.center(Text(" DockedUp - Interactive Docker Compose Monitor", justify="center", style="bold magenta")))
     return layout
 
@@ -110,7 +115,9 @@ def generate_tables_from_groups(groups: Dict[str, List[Dict]], state: AppState) 
         table.add_column("MEM USAGE / LIMIT", justify="right")
 
         for container in containers:
-            row_style = "on blue" if current_flat_index == state.selected_index else ""
+            with state.lock:
+                is_selected = (current_flat_index == state.selected_index)
+            row_style = "on blue" if is_selected else ""
             table.add_row(
                 container["name"], container["status"], format_uptime(container.get('started_at')),
                 container["health"], container["cpu"], container["memory"], style=row_style
@@ -128,57 +135,59 @@ def update_footer(layout: Layout, state: AppState):
     layout["footer"].update(Align.center(footer_text))
 
 @app.callback(invoke_without_command=True)
-def main():
+def main(
+    refresh_rate: Annotated[float, typer.Option("--refresh", "-r", help="UI refresh rate in seconds.")] = 1.0,
+):
     try:
         client = docker.from_env(timeout=5); client.ping()
     except DockerException as e:
         console.print(f"[bold red]Error:[/bold red] Failed to connect to Docker. Is it running?\n{e}"); raise typer.Exit(code=1)
 
     monitor = ContainerMonitor(client)
-    app_state = AppState([])
+    app_state = AppState()
     layout = generate_layout()
-    update_footer(layout, app_state) # Initial footer setup to prevent glitch
+    should_quit = threading.Event()
 
-    try:
-        with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
-            monitor.run()
-            should_quit = False
-            
-            # Initial draw
-            grouped_data = monitor.get_grouped_containers()
-            table_layout = generate_tables_from_groups(grouped_data, app_state)
-            layout["main"].update(table_layout)
-            update_footer(layout, app_state)
-            live.refresh()
-            
-            while not should_quit:
+    def input_worker(live: Live):
+        while not should_quit.is_set():
+            try:
                 key = readchar.readkey()
-
                 if key == readchar.key.UP: app_state.move_selection(-1)
                 elif key == readchar.key.DOWN: app_state.move_selection(1)
-                elif key.lower() == 'q': should_quit = True
+                elif key.lower() == 'q': should_quit.set()
                 else:
                     container = app_state.get_selected_container()
                     if container:
-                        container_id = container['id']
-                        container_name = container['name']
+                        container_id = container['id']; container_name = container['name']
                         if key.lower() == 'l': run_docker_command(live, ["docker", "logs", "-f", "--tail", "100", container_id], container_name)
                         elif key.lower() == 'r': run_docker_command(live, ["docker", "restart", container_id], container_name, confirm=True)
                         elif key.lower() == 'x': run_docker_command(live, ["docker", "stop", container_id], container_name, confirm=True)
                         elif key.lower() == 's': run_docker_command(live, ["docker", "exec", "-it", container_id, "/bin/sh"], container_name)
-                
-                # Redraw after every action
+            except (KeyboardInterrupt):
+                should_quit.set()
+
+    try:
+        with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
+            monitor.run()
+            
+            input_thread = threading.Thread(target=input_worker, args=(live,), daemon=True)
+            input_thread.start()
+
+            while not should_quit.is_set():
                 grouped_data = monitor.get_grouped_containers()
                 table_layout = generate_tables_from_groups(grouped_data, app_state)
                 layout["main"].update(table_layout)
                 update_footer(layout, app_state)
-                live.refresh()
+                # The 'Live' object handles its own refresh, but we need to sleep
+                # to prevent this loop from pegging the CPU.
+                time.sleep(refresh_rate)
 
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
+        should_quit.set()
         monitor.stop()
-        console.print("\n[bold yellow] See You Soon![/bold yellow]")
+        console.print("\n[bold yellow]See You Soon![/bold yellow]")
 
 if __name__ == "__main__":
     app()
