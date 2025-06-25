@@ -1,4 +1,5 @@
 import time
+from typing_extensions import Annotated
 from typing import Dict, List
 
 import typer
@@ -19,6 +20,7 @@ app = typer.Typer(
     name="dockedup",
     help="htop for your Docker Compose stack. A live, beautiful Docker Compose monitor.",
     add_completion=False,
+    no_args_is_help=True,
 )
 console = Console()
 
@@ -28,7 +30,6 @@ def generate_layout() -> Layout:
     layout.split(
         Layout(name="header", size=3),
         Layout(ratio=1, name="main"),
-        # THIS IS THE CORRECTED LINE:
         Layout(size=1, name="footer")
     )
     layout["header"].update(
@@ -42,7 +43,7 @@ def generate_layout() -> Layout:
 def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> Layout:
     """Create a Rich Table for each Compose project group."""
     layout = Layout()
-    
+
     if not groups:
         layout.update(Align.center(Text("No containers found.", style="yellow"), vertical="middle"))
         return layout
@@ -68,18 +69,19 @@ def generate_tables_from_groups(groups: Dict[str, List[FormattedContainer]]) -> 
                 container["ports"],
             )
         tables.append(Panel(table, border_style="dim blue", expand=True))
-    
+
     layout.split_column(*tables)
     return layout
 
-
-@app.command()
-def monitor(
-    refresh_rate: int = typer.Option(
-        2, "--refresh", "-r", help="Refresh rate in seconds."
-    ),
+@app.callback(invoke_without_command=True)
+def main(
+    refresh_rate: Annotated[int, typer.Option(
+        "--refresh", "-r", help="Refresh rate in seconds."
+    )] = 2,
 ):
-    """Monitor Docker containers in a live, beautiful table."""
+    """
+    Monitor Docker containers in a live, beautiful table.
+    """
     try:
         client = get_docker_client()
     except DockerException as e:
@@ -87,32 +89,29 @@ def monitor(
         raise typer.Exit(code=1)
 
     layout = generate_layout()
-    
+
     with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
         try:
             while True:
                 layout["footer"].update(
                     Align.right(f"🔁 Refreshing every {refresh_rate}s... Press Ctrl+C to exit.")
                 )
-                
-                # Show spinner while fetching data
+
                 spinner = Spinner("dots", text=Text("Fetching container data...", style="green"))
                 layout["main"].update(Align.center(spinner, vertical="middle"))
                 live.update(layout)
-                
-                # Fetch and display data
+
                 groups = get_grouped_containers(client)
                 table_layout = generate_tables_from_groups(groups)
                 layout["main"].update(table_layout)
                 live.update(layout)
-                
+
                 time.sleep(refresh_rate)
         except KeyboardInterrupt:
             console.print("\n[bold yellow]👋 Exiting DockedUp. Goodbye![/bold yellow]")
         except DockerException as e:
             console.print(f"\n[bold red]Error:[/bold red] Lost connection to Docker daemon: {e}")
             raise typer.Exit(code=1)
-
 
 if __name__ == "__main__":
     app()
