@@ -20,7 +20,6 @@ app = typer.Typer(
     name="dockedup",
     help="htop for your Docker Compose stack. A live, beautiful Docker Compose monitor.",
     add_completion=False,
-    no_args_is_help=True,
 )
 console = Console()
 
