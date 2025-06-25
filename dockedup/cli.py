@@ -1,4 +1,5 @@
 import time
+import subprocess
 from typing_extensions import Annotated
 from typing import Dict, List
 
@@ -12,16 +13,58 @@ from rich.align import Align
 from rich.text import Text
 import docker
 from docker.errors import DockerException
+import readchar
 
 from .docker_monitor import ContainerMonitor
 from .utils import format_uptime
 
 app = typer.Typer(
     name="dockedup",
-    help="htop for your Docker Compose stack. A live, beautiful Docker Compose monitor.",
+    help="htop for your Docker Compose stack. An interactive, real-time monitor.",
     add_completion=False,
 )
 console = Console()
+
+class AppState:
+    """Manages the application's interactive state."""
+    def __init__(self, containers: List[Dict]):
+        self.all_containers = containers
+        self.selected_index = 0
+    
+    def update_containers(self, containers: List[Dict]):
+        current_id = self.get_selected_container_id()
+        self.all_containers = containers
+        if current_id:
+            for i, c in enumerate(self.all_containers):
+                if c.get('id') == current_id:
+                    self.selected_index = i
+                    return
+        self.move_selection(0)
+
+    def get_selected_container_id(self) -> str | None:
+        if self.all_containers and 0 <= self.selected_index < len(self.all_containers):
+            return self.all_containers[self.selected_index].get('id')
+        return None
+
+    def move_selection(self, delta: int):
+        if not self.all_containers:
+            self.selected_index = 0
+            return
+        self.selected_index = (self.selected_index + delta) % len(self.all_containers)
+
+def run_docker_command(live_display: Live, command: List[str]):
+    """Pauses the live display to run a Docker command in the foreground."""
+    live_display.stop()
+    try:
+        subprocess.run(command)
+        # For non-interactive commands, we can add a pause.
+        if "-f" not in command and "exec" not in command:
+            console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
+    except Exception as e:
+        console.print(f"[bold red]Failed to execute command:[/bold red]\n{e}")
+        console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
+    finally:
+        live_display.start() # Resume the live display
 
 def generate_layout() -> Layout:
     layout = Layout(name="root")
@@ -30,83 +73,94 @@ def generate_layout() -> Layout:
         Layout(ratio=1, name="main"),
         Layout(size=1, name="footer")
     )
-    layout["header"].update(
-        Align.center(
-            Text("🚀 DockedUp - Real-time Docker Compose Monitor", justify="center", style="bold magenta"),
-            vertical="middle"
-        )
-    )
+    layout["header"].update(Align.center(Text("🚀 DockedUp - Interactive Docker Compose Monitor", justify="center", style="bold magenta")))
     return layout
 
-def generate_tables_from_groups(groups: Dict[str, List[Dict]]) -> Layout:
+def generate_tables_from_groups(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
     layout = Layout()
     if not groups:
         layout.update(Align.center(Text("No containers found.", style="yellow"), vertical="middle"))
         return layout
 
+    flat_list = [c for project_containers in groups.values() for c in project_containers]
+    state.update_containers(flat_list)
+
     tables = []
+    current_flat_index = 0
     for project_name, containers in groups.items():
-        table = Table(
-            title=f"Project: [bold cyan]{project_name}[/bold cyan]",
-            title_style="", border_style="blue", expand=True
-        )
+        table = Table(title=f"Project: [bold cyan]{project_name}[/bold cyan]", border_style="blue", expand=True)
         table.add_column("Container", style="cyan", no_wrap=True)
         table.add_column("Status", justify="left")
         table.add_column("Uptime", justify="right")
         table.add_column("Health", justify="left")
-        table.add_column("Ports", justify="left")
         table.add_column("CPU %", justify="right")
         table.add_column("MEM USAGE / LIMIT", justify="right")
 
         for container in containers:
+            row_style = "on blue" if current_flat_index == state.selected_index else ""
             table.add_row(
-                container["name"],
-                container["status"],
-                format_uptime(container.get('started_at')),
-                container["health"],
-                container["ports"],
-                container["cpu"],
-                container["memory"],
+                container["name"], container["status"], format_uptime(container.get('started_at')),
+                container["health"], container["cpu"], container["memory"], style=row_style
             )
+            current_flat_index += 1
         tables.append(Panel(table, border_style="dim blue", expand=True))
-
+    
     layout.split_column(*tables)
     return layout
 
 @app.callback(invoke_without_command=True)
 def main(
-    refresh_rate: Annotated[float, typer.Option(
-        "--refresh", "-r", help="UI refresh rate in seconds (data is real-time)."
-    )] = 0.5,
+    refresh_rate: Annotated[float, typer.Option("--refresh", "-r", help="UI refresh rate in seconds.")] = 1.0,
 ):
     try:
-        client = docker.from_env(timeout=5)
-        client.ping()
+        client = docker.from_env(timeout=5); client.ping()
     except DockerException as e:
-        console.print(f"[bold red]Error:[/bold red] Failed to connect to Docker. Is it running?\n{e}")
-        raise typer.Exit(code=1)
+        console.print(f"[bold red]Error:[/bold red] Failed to connect to Docker. Is it running?\n{e}"); raise typer.Exit(code=1)
 
     monitor = ContainerMonitor(client)
+    app_state = AppState([])
     layout = generate_layout()
 
     try:
-        with Live(layout, screen=True, transient=True, redirect_stderr=False, refresh_per_second=1/refresh_rate) as live:
+        with Live(layout, screen=True, transient=True, redirect_stderr=False) as live:
             monitor.run()
+            should_quit = False
             
-            while not monitor.stop_event.is_set():
-                grouped_data = monitor.get_grouped_containers()
-                table_layout = generate_tables_from_groups(grouped_data)
-                layout["main"].update(table_layout)
-                layout["footer"].update(
-                    Align.right(f"⚡️ Real-time data | UI Refresh: {refresh_rate}s | Press Ctrl+C to exit")
-                )
-                time.sleep(refresh_rate)
+            # Initial draw
+            grouped_data = monitor.get_grouped_containers()
+            table_layout = generate_tables_from_groups(grouped_data, app_state)
+            layout["main"].update(table_layout)
+            live.refresh()
+            
+            while not should_quit:
+                key = readchar.readkey()
 
-    except KeyboardInterrupt:
+                if key == readchar.key.UP: app_state.move_selection(-1)
+                elif key == readchar.key.DOWN: app_state.move_selection(1)
+                elif key.lower() == 'q': should_quit = True
+                else:
+                    container_id = app_state.get_selected_container_id()
+                    if container_id:
+                        if key.lower() == 'l': run_docker_command(live, ["docker", "logs", "-f", "--tail", "100", container_id])
+                        elif key.lower() == 'r': run_docker_command(live, ["docker", "restart", container_id])
+                        elif key.lower() == 'x': run_docker_command(live, ["docker", "stop", container_id])
+                        elif key.lower() == 's': run_docker_command(live, ["docker", "exec", "-it", container_id, "/bin/sh"])
+                
+                # Redraw after every action
+                grouped_data = monitor.get_grouped_containers()
+                table_layout = generate_tables_from_groups(grouped_data, app_state)
+                layout["main"].update(table_layout)
+                footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate"
+                if app_state.get_selected_container_id():
+                    footer_text += " | [b]L[/b]ogs | [b]R[/b]estart | [b]S[/b]hell | [b]X[/b] Stop"
+                layout["footer"].update(Align.center(footer_text))
+                live.refresh()
+
+    except (KeyboardInterrupt, SystemExit):
         pass
     finally:
         monitor.stop()
-        console.print("\n[bold yellow] Exiting DockedUp. 👋 ![/bold yellow]")
+        console.print("\n[bold yellow]👋 Exiting DockedUp. Goodbye![/bold yellow]")
 
 if __name__ == "__main__":
     app()
