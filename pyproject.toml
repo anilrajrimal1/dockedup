@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dockedup"
-version = "0.1.0"
+version = "0.1.1"
 description = "Your live, beautiful Docker Compose monitor CLI tool."
 authors = ["Anil Raj Rimal <anilrajrimal@gmail.com>"]
 readme = "README.md"
