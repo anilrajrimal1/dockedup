@@ -1,7 +1,6 @@
 import threading
 from collections import defaultdict
 from typing import Dict, List, Any
-from datetime import datetime
 
 import docker
 from docker.client import DockerClient
@@ -46,10 +45,11 @@ class ContainerMonitor:
         container_id = event.get('id')
         if not container_id: return
 
-        if status in ['start', 'unpause'] or 'health_status' in status:
-            self._add_or_update_container(container_id)
-        elif status in ['die', 'destroy', 'stop', 'pause', 'kill', 'oom']:
+        # trigger destroy only after fully removing container
+        if status == 'destroy':
             self._remove_container(container_id)
+        else:
+            self._add_or_update_container(container_id)
 
     def _add_or_update_container(self, container_id: str):
         try:
@@ -68,14 +68,18 @@ class ContainerMonitor:
                     'started_at': parse_docker_time(state.get("StartedAt")),
                     'ports': format_ports(container_info.get("NetworkSettings", {}).get("Ports", {})),
                     'project': get_compose_project_name(container_info.get("Config", {}).get("Labels", {})),
-                    'cpu': "[grey50]—[/grey50]",
-                    'memory': "[grey50]—[/grey50]",
+                    'cpu': self.containers.get(container_id, {}).get('cpu', "[grey50]—[/grey50]"),
+                    'memory': self.containers.get(container_id, {}).get('memory', "[grey50]—[/grey50]"),
                 }
 
             if state.get("Status") == 'running' and container_id not in self.stats_threads:
                 thread = threading.Thread(target=self._stats_worker, args=(container_id,), daemon=True)
                 self.stats_threads[container_id] = thread
                 thread.start()
+            elif state.get("Status") != 'running' and container_id in self.stats_threads:
+                # Clean up stats thread for non-running containers
+                del self.stats_threads[container_id]
+
         except (NotFound, DockerException):
             self._remove_container(container_id)
 
