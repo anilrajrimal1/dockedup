@@ -7,6 +7,7 @@ from docker.errors import NotFound
 
 from dockedup.docker_monitor import ContainerMonitor
 
+
 # --- MOCK DATA FIXTURES ---
 
 @pytest.fixture
@@ -61,15 +62,16 @@ def mock_docker_client(mocker, mock_container_data_running, mock_container_data_
     return mock_client
 
 
-# --- TESTS (Now 5 tests) ---
+# --- TESTS ---
 
 def test_monitor_initial_populate(mock_docker_client):
     """Test if the monitor correctly populates with initial containers."""
     monitor = ContainerMonitor(mock_docker_client)
     monitor.initial_populate()
     assert len(monitor.containers) == 2
-    assert '✅ Up' in monitor.containers['container1_id']['status']
-    assert '❌ Down' in monitor.containers['container2_id']['status']
+    assert '[green]✅ Up[/green]' in monitor.containers['container1_id']['status']
+    assert '[red]❌ Exited[/red]' in monitor.containers['container2_id']['status']
+
 
 def test_monitor_handles_start_event(mock_docker_client):
     """Test if the monitor adds/updates a container on a 'start' event."""
@@ -77,17 +79,20 @@ def test_monitor_handles_start_event(mock_docker_client):
     mock_docker_client.events.return_value = iter([start_event])
     
     monitor = ContainerMonitor(mock_docker_client)
-    monitor.run(); time.sleep(0.1); monitor.stop()
+    monitor.run()
+    time.sleep(0.1)
+    monitor.stop()
 
     assert 'container1_id' in monitor.containers
+
 
 def test_monitor_handles_stop_event_updates_status(mock_docker_client, mock_container_data_running):
     """Test 'die' event updates container status to Down, not removes it."""
     monitor = ContainerMonitor(mock_docker_client)
     monitor.initial_populate()
-    assert '✅ Up' in monitor.containers['container1_id']['status']
+    assert '[green]✅ Up[/green]' in monitor.containers['container1_id']['status']
     
-    # Simulate the container state changing to 'exited' in our mock database
+    # Simulate the container state changing to 'exited' in mock database
     stopped_state = mock_container_data_running.copy()
     stopped_state['State']['Status'] = 'exited'
     mock_docker_client.mock_db['container1_id'] = stopped_state
@@ -95,10 +100,13 @@ def test_monitor_handles_stop_event_updates_status(mock_docker_client, mock_cont
     stop_event = {'Type': 'container', 'status': 'die', 'id': 'container1_id'}
     mock_docker_client.events.return_value = iter([stop_event])
     
-    monitor.run(); time.sleep(0.1); monitor.stop()
+    monitor.run()
+    time.sleep(0.1)
+    monitor.stop()
     
     assert 'container1_id' in monitor.containers
-    assert '❌ Down' in monitor.containers['container1_id']['status']
+    assert '[red]❌ Exited[/red]' in monitor.containers['container1_id']['status']
+
 
 def test_monitor_handles_destroy_event_removes_container(mock_docker_client):
     """Test a 'destroy' event correctly removes the container from the list."""
@@ -109,18 +117,31 @@ def test_monitor_handles_destroy_event_removes_container(mock_docker_client):
     destroy_event = {'Type': 'container', 'status': 'destroy', 'id': 'container1_id'}
     mock_docker_client.events.return_value = iter([destroy_event])
     
-    monitor.run(); time.sleep(0.1); monitor.stop()
+    monitor.run()
+    time.sleep(0.1)
+    monitor.stop()
 
     assert 'container1_id' not in monitor.containers
+
 
 def test_monitor_stats_worker_updates_container(mock_docker_client):
     """Test if the stats worker correctly updates a container's CPU and Memory."""
     monitor = ContainerMonitor(mock_docker_client)
     
     mock_stats_data = {
-        'cpu_stats': {'cpu_usage': {'total_usage': 2000}, 'system_cpu_usage': 10000, 'online_cpus': 2},
-        'precpu_stats': {'cpu_usage': {'total_usage': 1000}, 'system_cpu_usage': 5000},
-        'memory_stats': {'usage': 1024 * 1024 * 50, 'limit': 1024 * 1024 * 100}
+        'cpu_stats': {
+            'cpu_usage': {'total_usage': 2000},
+            'system_cpu_usage': 10000,
+            'online_cpus': 2
+        },
+        'precpu_stats': {
+            'cpu_usage': {'total_usage': 1000},
+            'system_cpu_usage': 5000
+        },
+        'memory_stats': {
+            'usage': 1024 * 1024 * 50,
+            'limit': 1024 * 1024 * 100
+        }
     }
     mock_docker_client.api.stats.return_value = iter([mock_stats_data])
     
@@ -128,5 +149,5 @@ def test_monitor_stats_worker_updates_container(mock_docker_client):
     time.sleep(0.1)
     
     updated_container = monitor.containers['container1_id']
-    assert '40.00%' in updated_container['cpu']
+    assert '[blue]40.0%[/blue]' in updated_container['cpu']
     assert '50.0MiB / 100.0MiB (50.0%)' in updated_container['memory']
