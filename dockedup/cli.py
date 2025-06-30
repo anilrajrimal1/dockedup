@@ -288,7 +288,7 @@ def main(
                         elif key.lower() == 'x':
                             run_docker_command(live, ["docker", "stop", container['id']], container['name'], confirm=True)
                         elif key.lower() == 's':
-                            run_docker_command(live, ["docker", "exec", "-it", container['id']], container['name'])
+                            run_docker_command(live, ["docker", "exec", "-it", container['id']], container['name'], "/bin/sh")
                 
                 app_state.ui_updated_event.set()
             
