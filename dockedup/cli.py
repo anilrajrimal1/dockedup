@@ -5,7 +5,6 @@ DockedUp CLI - Interactive Docker Compose stack monitor.
 import time
 import subprocess
 import threading
-import sys
 import os
 import logging
 from typing import Dict, List, Optional
@@ -32,7 +31,7 @@ logging.basicConfig(
     level=logging.WARNING,
     format="%(message)s",
     datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True)]
+    handlers=[RichHandler(rich_tracebacks=True)],
 )
 logger = logging.getLogger("dockedup")
 
@@ -49,9 +48,10 @@ app = typer.Typer(
 
 console = Console()
 
+
 class AppState:
     """Manages the application's shared interactive state with thread-safety."""
-    
+
     def __init__(self):
         self.all_containers: List[Dict] = []
         self.selected_index: int = 0
@@ -68,8 +68,8 @@ class AppState:
         with self.lock:
             current_id = self._get_selected_container_id_unsafe()
             self.all_containers = containers
-            self.container_id_to_index = {c.get('id'): i for i, c in enumerate(self.all_containers)}
-            
+            self.container_id_to_index = {c.get("id"): i for i, c in enumerate(self.all_containers)}
+
             if current_id and current_id in self.container_id_to_index:
                 self.selected_index = self.container_id_to_index[current_id]
             elif self.all_containers:
@@ -87,7 +87,7 @@ class AppState:
     def _get_selected_container_id_unsafe(self) -> Optional[str]:
         """Get selected container ID without acquiring lock (internal use)."""
         if self.all_containers and 0 <= self.selected_index < len(self.all_containers):
-            return self.all_containers[self.selected_index].get('id')
+            return self.all_containers[self.selected_index].get("id")
         return None
 
     def move_selection(self, delta: int):
@@ -118,25 +118,32 @@ def setup_logging(debug: bool = False):
     else:
         logging.getLogger("dockedup").setLevel(logging.WARNING)
 
+
 def version_callback(value: bool):
     """Handle version flag callback."""
     if value:
         console.print(f"DockedUp v{__version__}")
         raise typer.Exit()
 
-def run_docker_command(live_display: Live, command: List[str], container_name: str, confirm: bool = False):
+
+def run_docker_command(
+    live_display: Live, command: List[str], container_name: str, confirm: bool = False
+):
     """Pauses the live display to run a Docker command."""
     live_display.stop()
     console.clear(home=True)
-    try: #stopped container ko logs
-        is_streaming_interactive = (command[1] == "exec" and "-it" in command) or \
-                                   (command[1] == "logs" and "-f" in command)
+    try:  # stopped container ko logs
+        is_streaming_interactive = (command[1] == "exec" and "-it" in command) or (
+            command[1] == "logs" and "-f" in command
+        )
 
         if confirm:
             action = command[1].capitalize()
-            console.print(f"\n[bold yellow]Are you sure you want to {action} container '{container_name}'? (y/n)[/bold yellow]")
+            console.print(
+                f"\n[bold yellow]Are you sure you want to {action} container '{container_name}'? (y/n)[/bold yellow]"
+            )
             key = readchar.readkey().lower()
-            if key != 'y':
+            if key != "y":
                 console.print("[green]Aborted.[/green]")
                 time.sleep(1)
                 return
@@ -144,20 +151,27 @@ def run_docker_command(live_display: Live, command: List[str], container_name: s
         if is_streaming_interactive:
             command_str = " ".join(command)
             if "logs -f" in command_str:
-                console.print(f"[bold cyan]Showing live logs for '{container_name}'. Press Ctrl+C to return.[/bold cyan]")
+                console.print(
+                    f"[bold cyan]Showing live logs for '{container_name}'. Press Ctrl+C to return.[/bold cyan]"
+                )
             os.system(command_str)
         else:
             result = subprocess.run(command, capture_output=True, text=True, check=False)
             if result.returncode != 0:
-                console.print(f"[bold red]Command failed (exit code {result.returncode}):[/bold red]")
+                console.print(
+                    f"[bold red]Command failed (exit code {result.returncode}):[/bold red]"
+                )
                 output = result.stderr.strip() or result.stdout.strip()
-                if output: console.print(output)
+                if output:
+                    console.print(output)
             else:
                 output = result.stdout.strip()
                 if output:
                     console.print(output)
                 else:
-                    console.print(f"[green]✅ Command '{' '.join(command[1:3])}...' executed successfully on '{container_name}'.[/green]")
+                    console.print(
+                        f"[green]✅ Command '{' '.join(command[1:3])}...' executed successfully on '{container_name}'.[/green]"
+                    )
             console.input("\n[bold]Press Enter to return...[/bold]")
 
     except Exception as e:
@@ -167,26 +181,33 @@ def run_docker_command(live_display: Live, command: List[str], container_name: s
     finally:
         live_display.start(refresh=True)
 
+
 def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
     """Generate the main UI layout with dynamically paginated project tables."""
     layout = Layout(name="root")
     layout.split(
-        Layout(name="header", size=3),
-        Layout(ratio=1, name="main"),
-        Layout(size=1, name="footer")
+        Layout(name="header", size=3), Layout(ratio=1, name="main"), Layout(size=1, name="footer")
     )
-    
-    header_text = Text(" DockedUp - Interactive Docker Compose Monitor", justify="center", style="bold magenta")
+
+    header_text = Text(
+        " DockedUp - Interactive Docker Compose Monitor", justify="center", style="bold magenta"
+    )
     if state.debug_mode:
         header_text.append(" [DEBUG MODE]", style="bold red")
     layout["header"].update(Align.center(header_text))
-    
+
     all_project_names = sorted(groups.keys())
-    flat_list = [c for name in all_project_names for c in sorted(groups[name], key=lambda x: x.get('name', ''))]
+    flat_list = [
+        c
+        for name in all_project_names
+        for c in sorted(groups[name], key=lambda x: x.get("name", ""))
+    ]
     state.update_containers(flat_list)
 
     if not state.all_containers:
-        layout["main"].update(Align.center(Text("No containers found.", style="yellow"), vertical="middle"))
+        layout["main"].update(
+            Align.center(Text("No containers found.", style="yellow"), vertical="middle")
+        )
         state.total_pages = 1
         state.current_page = 0
     else:
@@ -194,21 +215,23 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
             # Calculate available space for content
             chrome_height = 3 + 1 + 4
             available_height = max(10, console.height - chrome_height)
-            
+
             # Build pages ensuring compose (project)
             pages: List[List[str]] = []
             current_page_projects: List[str] = []
             current_page_height = 0
-            
+
             for proj_name in all_project_names:
                 containers_in_project = groups[proj_name]
-                
+
                 # Calculate exact height
                 # Every Project ko lagi: title(1) + header_row(1) + container_rows + panel_borders(2) + spacing(1)
                 project_height = len(containers_in_project) + 5
-                
+
                 # If adding this project would exceed available height AND current page is not empty
-                if current_page_projects and (current_page_height + project_height > available_height):
+                if current_page_projects and (
+                    current_page_height + project_height > available_height
+                ):
                     # Finalize current page and start new one
                     pages.append(current_page_projects[:])  # Copy the list
                     current_page_projects = [proj_name]
@@ -217,40 +240,40 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
                     # Add project to current page
                     current_page_projects.append(proj_name)
                     current_page_height += project_height
-            
+
             # last page (include)
             if current_page_projects:
                 pages.append(current_page_projects)
-            
+
             # euta page (compulsory)
             if not pages:
                 pages = [[]]
             state.total_pages = len(pages)
-            
+
             # Handle selection and page management
             if state.all_containers:
                 selected_container = state.all_containers[state.selected_index]
-                selected_project = selected_container['project']
-                
+                selected_project = selected_container["project"]
+
                 # Find which page contains the selected container's project
                 page_with_selection = 0
                 for i, page_projects in enumerate(pages):
                     if selected_project in page_projects:
                         page_with_selection = i
                         break
-                
+
                 if state.page_change_requested:
                     # if explicitly changed page - valid range mai basam
                     state.current_page = max(0, min(state.current_page, state.total_pages - 1))
-                    
+
                     # select every page ko first container
                     if pages[state.current_page]:
                         target_project = pages[state.current_page][0]
                         for i, container in enumerate(state.all_containers):
-                            if container['project'] == target_project:
+                            if container["project"] == target_project:
                                 state.selected_index = i
                                 break
-                    
+
                     state.page_change_requested = False
                 else:
                     state.current_page = page_with_selection
@@ -260,14 +283,14 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
             renderables_on_page = []
             if state.current_page < len(pages):
                 displayed_projects = pages[state.current_page]
-                
+
                 for proj_name in displayed_projects:
                     # Create table
                     table = Table(
-                        title=f"Project: [bold cyan]{proj_name}[/bold cyan]", 
-                        border_style="blue", 
+                        title=f"Project: [bold cyan]{proj_name}[/bold cyan]",
+                        border_style="blue",
                         expand=True,
-                        show_lines=False
+                        show_lines=False,
                     )
                     table.add_column("Container", style="cyan", no_wrap=True)
                     table.add_column("Status", justify="left")
@@ -275,35 +298,47 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
                     table.add_column("Health", justify="left")
                     table.add_column("CPU %", justify="right")
                     table.add_column("MEM USAGE / LIMIT", justify="right")
-                    
+
                     # Add containers
-                    project_containers = sorted(groups[proj_name], key=lambda c: c.get('name', ''))
+                    project_containers = sorted(groups[proj_name], key=lambda c: c.get("name", ""))
                     for container in project_containers:
-                        idx = state.container_id_to_index.get(container['id'])
+                        idx = state.container_id_to_index.get(container["id"])
                         style = "on blue" if idx == state.selected_index else ""
-                        
-                        uptime = format_uptime(container.get('started_at')) if 'Up' in container['status'] else "[grey50]—[/grey50]"
-                        
+
+                        uptime = (
+                            format_uptime(container.get("started_at"))
+                            if "Up" in container["status"]
+                            else "[grey50]—[/grey50]"
+                        )
+
                         table.add_row(
-                            container["name"], 
-                            container["status"], 
-                            uptime, 
-                            container["health"], 
-                            container["cpu"], 
-                            container["memory"], 
-                            style=style
+                            container["name"],
+                            container["status"],
+                            uptime,
+                            container["health"],
+                            container["cpu"],
+                            container["memory"],
+                            style=style,
                         )
 
                     renderables_on_page.append(Panel(table, border_style="dim blue"))
-            
+
             page_info = f"Page {state.current_page + 1} of {state.total_pages}"
             if state.debug_mode:
                 page_info += f" | Available Height: {available_height}"
-            
+
             if renderables_on_page:
-                layout["main"].update(Panel(Group(*renderables_on_page), title=page_info, border_style="dim blue"))
+                layout["main"].update(
+                    Panel(Group(*renderables_on_page), title=page_info, border_style="dim blue")
+                )
             else:
-                layout["main"].update(Panel(Text("No projects on this page", justify="center"), title=page_info, border_style="dim blue"))
+                layout["main"].update(
+                    Panel(
+                        Text("No projects on this page", justify="center"),
+                        title=page_info,
+                        border_style="dim blue",
+                    )
+                )
 
     # Footer
     footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate | [b]PgUp/PgDn[/b] Change Page"
@@ -311,8 +346,9 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
         footer_text += " | [b]L[/b]ogs | [b]R[/b]estart | [b]S[/b]hell | [b]X[/b] Stop"
     footer_text += " | [b]?[/b] Help"
     layout["footer"].update(Align.center(footer_text))
-    
+
     return layout
+
 
 def show_help_screen():
     """Display help screen with all available commands."""
@@ -338,15 +374,20 @@ def show_help_screen():
     console.print(Panel(help_content, title="Help", border_style="cyan"))
     console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
 
+
 @app.command()
 def main(
-    refresh_rate: Annotated[float, typer.Option("--refresh", "-r", help="UI refresh rate in seconds", min=0.1)] = 1.0,
+    refresh_rate: Annotated[
+        float, typer.Option("--refresh", "-r", help="UI refresh rate in seconds", min=0.1)
+    ] = 1.0,
     debug: Annotated[bool, typer.Option("--debug", "-d", help="Enable debug mode")] = False,
-    version: Annotated[Optional[bool], typer.Option("--version", "-v", callback=version_callback, is_eager=True)] = None,
+    version: Annotated[
+        Optional[bool], typer.Option("--version", "-v", callback=version_callback, is_eager=True)
+    ] = None,
 ):
     """🐳 Interactive Docker Compose stack monitor."""
     setup_logging(debug=debug)
-    
+
     try:
         client = docker.from_env(timeout=5)
         client.ping()
@@ -364,13 +405,17 @@ def main(
         while not should_quit.is_set():
             try:
                 key = readchar.readkey()
-                if key == readchar.key.CTRL_C or key.lower() == 'q':
+                if key == readchar.key.CTRL_C or key.lower() == "q":
                     should_quit.set()
-                elif key in (readchar.key.UP, 'k'): app_state.move_selection(-1)
-                elif key in (readchar.key.DOWN, 'j'): app_state.move_selection(1)
-                elif key == readchar.key.PAGE_UP: app_state.change_page(-1)
-                elif key == readchar.key.PAGE_DOWN: app_state.change_page(1)
-                elif key == '?':
+                elif key in (readchar.key.UP, "k"):
+                    app_state.move_selection(-1)
+                elif key in (readchar.key.DOWN, "j"):
+                    app_state.move_selection(1)
+                elif key == readchar.key.PAGE_UP:
+                    app_state.change_page(-1)
+                elif key == readchar.key.PAGE_DOWN:
+                    app_state.change_page(1)
+                elif key == "?":
                     live.stop()
                     console.clear(home=True)
                     show_help_screen()
@@ -378,22 +423,43 @@ def main(
                 else:
                     container = app_state.get_selected_container()
                     if container:
-                        if key.lower() == 'l':
+                        if key.lower() == "l":
                             cmd = ["docker", "logs", "--tail", "100"]
-                            if 'Up' in container['status']: cmd.insert(2, "-f")
-                            cmd.append(container['id'])
-                            run_docker_command(live, cmd, container['name'])
-                        elif key.lower() == 'r': run_docker_command(live, ["docker", "restart", container['id']], container['name'], confirm=True)
-                        elif key.lower() == 'x': run_docker_command(live, ["docker", "stop", container['id']], container['name'], confirm=True)
-                        elif key.lower() == 's': run_docker_command(live, ["docker", "exec", "-it", container['id'], "/bin/sh"], container['name'])
-            except KeyboardInterrupt: should_quit.set()
+                            if "Up" in container["status"]:
+                                cmd.insert(2, "-f")
+                            cmd.append(container["id"])
+                            run_docker_command(live, cmd, container["name"])
+                        elif key.lower() == "r":
+                            run_docker_command(
+                                live,
+                                ["docker", "restart", container["id"]],
+                                container["name"],
+                                confirm=True,
+                            )
+                        elif key.lower() == "x":
+                            run_docker_command(
+                                live,
+                                ["docker", "stop", container["id"]],
+                                container["name"],
+                                confirm=True,
+                            )
+                        elif key.lower() == "s":
+                            run_docker_command(
+                                live,
+                                ["docker", "exec", "-it", container["id"], "/bin/sh"],
+                                container["name"],
+                            )
+            except KeyboardInterrupt:
+                should_quit.set()
             except Exception as e:
                 logger.error(f"Input handler error: {e}")
                 should_quit.set()
         app_state.ui_updated_event.set()
 
     try:
-        with Live(console=console, screen=True, transient=True, redirect_stderr=False, auto_refresh=False) as live:
+        with Live(
+            console=console, screen=True, transient=True, redirect_stderr=False, auto_refresh=False
+        ) as live:
             monitor.run()
             input_thread = threading.Thread(target=input_worker, args=(live,), daemon=True)
             input_thread.start()
@@ -407,6 +473,7 @@ def main(
         should_quit.set()
         monitor.stop()
         console.print("\n[bold yellow]👋 See you soon![/bold yellow]")
+
 
 if __name__ == "__main__":
     app()
