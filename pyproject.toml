@@ -1,40 +1,159 @@
-[tool.poetry]
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "dockedup"
-version = "0.1.2"
+version = "0.1.3"
+authors = [
+    {name = "Anil Raj Rimal", email = "anilrajrimal@gmail.com"},
+]
 description = "Your live, beautiful Docker Compose monitor CLI tool."
-authors = ["Anil Raj Rimal <anilrajrimal@gmail.com>"]
 readme = "README.md"
-license = "MIT"
-homepage = "https://github.com/anilrajrimal1/dockedup"
-repository = "https://github.com/anilrajrimal1/dockedup"
-keywords = ["docker", "devops", "cli", "monitor", "compose", "terminal", "typer", "python"]
+license = {text = "MIT"}
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
-    "Topic :: System :: Monitoring",
-    "Topic :: Software Development :: Build Tools",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+]
+keywords = ["docker", "compose", "monitor", "htop", "cli", "containers", "devops"]
+dependencies = [
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "docker>=6.0.0",
+    "readchar>=4.0.0",
+    "typing-extensions>=4.0.0",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.10"
-typer = {version = ">=0.12.0", extras = ["all"]}
-docker = "^7.0.0"
-rich = "^13.7.0"
-readchar = "^4.2.1"
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "pre-commit>=3.0.0",
+    "build>=0.10.0",
+    "twine>=4.0.0",
+]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.4.3"
-pytest-mock = "^3.12.0"
+[project.urls]
+Homepage = "https://github.com/anilrajrimal1/dockedup"
+Repository = "https://github.com/anilrajrimal1/dockedup"
+Documentation = "https://github.com/anilrajrimal1/dockedup/wiki"
+"Bug Reports" = "https://github.com/anilrajrimal1/dockedup/issues"
 
-[tool.poetry.scripts]
+[project.scripts]
 dockedup = "dockedup.cli:app"
 
-[build-system]
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+[tool.setuptools]
+packages = ["dockedup"]
+
+[tool.setuptools.package-data]
+dockedup = ["py.typed"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = [
+    "docker.*",
+    "readchar.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers --strict-config"
+testpaths = [
+    "tests",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[tool.coverage.run]
+source = ["dockedup"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]
+
+[tool.flake8]
+max-line-length = 100
+select = ["E", "F", "W", "C90"]
+ignore = [
+    "E203",  # whitespace before ':'
+    "E501",  # line too long (handled by black)
+    "W503",  # line break before binary operator
+]
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    ".eggs",
+    "*.egg-info",
+    ".env",
+    ".venv",
+    ".mypy_cache",
+    ".pytest_cache",
+]
