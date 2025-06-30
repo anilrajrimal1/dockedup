@@ -1,6 +1,7 @@
 import time
 import subprocess
 import threading
+import sys
 from typing_extensions import Annotated
 from typing import Dict, List
 
@@ -76,18 +77,19 @@ def run_docker_command(live_display: Live, command: List[str], container_name: s
         
         if is_interactive:
             if "logs" in command:
-                console.print(f"[bold cyan]Viewing logs for '{container_name}'[/bold cyan]")
-                console.print("[dim]Note: Ctrl+C will exit the entire application from logs view[/dim]\n")
+                console.print(f"[bold cyan]Showing live logs for '{container_name}'. Press Ctrl+C to return to DockedUp.[/bold cyan]")
             
-            subprocess.run(command)
-                
+            proc = subprocess.Popen(command)
+            try:
+                proc.wait()
+            except KeyboardInterrupt:
+                proc.terminate()
+                try: proc.wait(timeout=1)
+                except subprocess.TimeoutExpired: proc.kill()
         else:
             subprocess.run(command)
             console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
 
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Exiting logs...[/yellow]")
-        raise
     except Exception as e:
         console.print(f"[bold red]Failed to execute command:[/bold red]\n{e}")
         console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
@@ -96,7 +98,6 @@ def run_docker_command(live_display: Live, command: List[str], container_name: s
         live_display.start()
 
 def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
-    """Builds the entire UI renderable from the current state."""
     layout = Layout(name="root")
     layout.split(Layout(name="header", size=3), Layout(ratio=1, name="main"), Layout(size=1, name="footer"))
     layout["header"].update(Align.center(Text(" DockedUp - Interactive Docker Compose Monitor", justify="center", style="bold magenta")))
@@ -136,9 +137,25 @@ def main(
     refresh_rate: Annotated[float, typer.Option("--refresh", "-r", help="UI refresh rate in seconds.")] = 1.0,
 ):
     try:
-        client = docker.from_env(timeout=5); client.ping()
+        client = docker.from_env(timeout=5)
+        client.ping()
     except DockerException as e:
-        console.print(f"[bold red]Error:[/bold red] Failed to connect to Docker. Is it running?\n{e}"); raise typer.Exit(code=1)
+        console.print(f"[bold red]Error: Failed to connect to Docker.[/bold red]")
+        if isinstance(getattr(e, 'original_error', None), FileNotFoundError):
+            console.print("\n[bold yellow]Could not find the Docker socket.[/bold yellow]")
+            platform = sys.platform
+            if platform == "darwin" or platform == "win32":
+                console.print("Please ensure [bold cyan]Docker Desktop[/bold cyan] is running.")
+                console.print("A good test is to run `docker ps` in your terminal to confirm it works.")
+            elif platform == "linux":
+                console.print("Please ensure the Docker daemon is running. You can check with: `sudo systemctl status docker`")
+                console.print("If it's running, you may need to add your user to the 'docker' group: `sudo usermod -aG docker $USER` (requires a new login to take effect).")
+            else: # Generic fallback for other systems
+                console.print(f"On your OS ('{platform}'), ensure the Docker daemon is running and accessible.")
+                console.print("You may need to set the [bold cyan]DOCKER_HOST[/bold cyan] environment variable or configure your [bold cyan]Docker context[/bold cyan] correctly.")
+        else:
+            console.print(f"Details: {e}")
+        raise typer.Exit(code=1)
 
     monitor = ContainerMonitor(client)
     app_state = AppState()
@@ -148,10 +165,7 @@ def main(
         while not should_quit.is_set():
             try:
                 key = readchar.readkey()
-                if key == readchar.key.CTRL_C or key.lower() == 'q':
-                    should_quit.set()
-                    app_state.ui_updated_event.set()  # Wake up main loop immediately
-                    break
+                if key == readchar.key.CTRL_C or key.lower() == 'q': should_quit.set()
                 elif key == readchar.key.UP: app_state.move_selection(-1)
                 elif key == readchar.key.DOWN: app_state.move_selection(1)
                 else:
@@ -163,16 +177,9 @@ def main(
                         elif key.lower() == 'x': run_docker_command(live, ["docker", "stop", container_id], container_name, confirm=True)
                         elif key.lower() == 's': run_docker_command(live, ["docker", "exec", "-it", container_id, "/bin/sh"], container_name)
                 app_state.ui_updated_event.set()
-            except (KeyboardInterrupt, EOFError):
-                # Handle both KeyboardInterrupt and EOFError (when input is closed)
-                should_quit.set()
-                app_state.ui_updated_event.set()
-                break
             except Exception:
-                # For any other unexpected exception, exit gracefully
                 should_quit.set()
-                app_state.ui_updated_event.set()
-                break
+        app_state.ui_updated_event.set()
 
     try:
         with Live(console=console, screen=True, transient=True, redirect_stderr=False, auto_refresh=False) as live:
@@ -184,14 +191,10 @@ def main(
                 grouped_data = monitor.get_grouped_containers()
                 ui_layout = generate_ui(grouped_data, app_state)
                 live.update(ui_layout, refresh=True)
-                
-                # Use a shorter timeout and check should_quit more frequently
-                if should_quit.wait(timeout=min(refresh_rate, 0.1)):
-                    break
+                app_state.ui_updated_event.wait(timeout=refresh_rate)
                 app_state.ui_updated_event.clear()
 
-    except KeyboardInterrupt:
-        should_quit.set()
+    except KeyboardInterrupt: pass
     finally:
         should_quit.set()
         monitor.stop()
