@@ -1,0 +1,38 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for DockedUp
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature for DockedUp! Please provide details to help us understand your idea.
+  - type: textarea
+    id: description
+    attributes:
+      label: Feature Description
+      description: Describe the feature or enhancement you’d like to see.
+      placeholder: "Add support for custom color themes in the DockedUp dashboard."
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case
+      description: Explain the problem this feature solves or how it improves DockedUp.
+      placeholder: "Custom themes would allow users to match their terminal’s color scheme."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Describe any workarounds or alternative tools you’ve tried.
+      placeholder: "Currently, I adjust terminal colors manually, but it’s not ideal."
+    validations:
+      required: false
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other details, mockups, or examples.
+      placeholder: "Example: Support themes like `dark`, `light`, or `solarized`."
