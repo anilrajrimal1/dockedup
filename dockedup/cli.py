@@ -1,10 +1,12 @@
 """
 DockedUp CLI - Interactive Docker Compose stack monitor.
 """
+
 import time
 import subprocess
 import threading
 import sys
+import os
 import logging
 from typing import Dict, List, Optional
 from typing_extensions import Annotated
@@ -110,10 +112,14 @@ def version_callback(value: bool):
         raise typer.Exit()
 
 def run_docker_command(live_display: Live, command: List[str], container_name: str, confirm: bool = False):
-    """Pauses the live display to run a Docker command in the foreground."""
+    """
+    Pauses the live display to run a Docker command, handling interactive and non-interactive cases.
+    """
     live_display.stop()
     console.clear(home=True)
     try:
+        is_interactive = any(flag in command for flag in ["-f", "-it"])
+
         if confirm:
             action = command[1].capitalize()
             console.print(f"\n[bold yellow]Are you sure you want to {action} container '{container_name}'? (y/n)[/bold yellow]")
@@ -122,30 +128,28 @@ def run_docker_command(live_display: Live, command: List[str], container_name: s
                 console.print("[green]Aborted.[/green]")
                 time.sleep(1)
                 return
-        
-        is_interactive = "-f" in command or "-it" in command
-        
+
+        # Use os.system for interactive commands
+        # Use subprocess.run for non-interactive commands
         if is_interactive:
-            if "logs" in command:
-                console.print(f"[bold cyan]Showing live logs for '{container_name}'. Press Ctrl+C to return to DockedUp.[/bold cyan]")
-            
-            try:
-                subprocess.run(command)
-            except KeyboardInterrupt:
-                pass
+            command_str = " ".join(command)
+            if "logs" in command_str:
+                console.print(f"[bold cyan]Showing live logs for '{container_name}'. Press Ctrl+C to return.[/bold cyan]")
+            os.system(command_str)
         else:
             result = subprocess.run(command, capture_output=True, text=True)
             if result.returncode != 0:
                 console.print(f"[bold red]Command failed:[/bold red] {result.stderr or result.stdout}")
             else:
                 console.print(f"[green]✅ Command executed successfully[/green]")
-            console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
+            console.input("\n[bold]Press Enter to return...[/bold]")
 
     except Exception as e:
         logger.error(f"Failed to execute command: {e}")
         console.print(f"[bold red]Failed to execute command:[/bold red]\n{e}")
-        console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
+        console.input("\n[bold]Press Enter to return...[/bold]")
     finally:
+        # resumes live display on return
         live_display.start(refresh=True)
 
 def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
@@ -267,11 +271,10 @@ def main(
                 key = readchar.readkey()
                 
                 if key == readchar.key.CTRL_C or key.lower() == 'q':
-                    should_quit.set()
-                    break 
-                elif key == readchar.key.UP or key.lower() == 'k':
+                    should_quit.set(); break
+                elif key in (readchar.key.UP, 'k'):
                     app_state.move_selection(-1)
-                elif key == readchar.key.DOWN or key.lower() == 'j':
+                elif key in (readchar.key.DOWN, 'j'):
                     app_state.move_selection(1)
                 elif key == '?':
                     live.stop()
@@ -288,17 +291,15 @@ def main(
                         elif key.lower() == 'x':
                             run_docker_command(live, ["docker", "stop", container['id']], container['name'], confirm=True)
                         elif key.lower() == 's':
-                            run_docker_command(live, ["docker", "exec", "-it", container['id']], container['name'], "/bin/sh")
+                            run_docker_command(live, ["docker", "exec", "-it", container['id'], "/bin/sh"], container['name'])
                 
                 app_state.ui_updated_event.set()
             
             except KeyboardInterrupt:
-                should_quit.set()
-                break
+                should_quit.set(); break
             except Exception as e:
                 logger.error(f"Input handler error: {e}")
-                should_quit.set()
-                break
+                should_quit.set(); break
         
         app_state.ui_updated_event.set()
 
