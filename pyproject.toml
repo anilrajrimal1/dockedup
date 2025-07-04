@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dockedup"
-version = "1.0.0"
+version = "1.0.1"
 authors = [
     {name = "Anil Raj Rimal", email = "anilrajrimal@gmail.com"},
 ]

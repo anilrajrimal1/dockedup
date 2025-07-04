@@ -53,29 +53,59 @@ class AppState:
     """Manages the application's shared interactive state with thread-safety."""
 
     def __init__(self):
+        # Data structures
         self.all_containers: List[Dict] = []
+        self.project_names: List[str] = []
+        self.project_to_container_indices: Dict[str, List[int]] = {}
+        self.container_index_to_project_index: Dict[int, int] = {}
+
+        # UI State
         self.selected_index: int = 0
-        self.container_id_to_index: Dict[str, int] = {}
+        self.scroll_offset: int = 0  # Index of the project at the top of the viewport
+        self.viewport_height_projects: int = 1  # How many projects fit on screen
+
+        # Control
         self.lock = threading.Lock()
         self.ui_updated_event = threading.Event()
         self.debug_mode: bool = False
-        self.current_page: int = 0
-        self.total_pages: int = 1
-        self.page_change_requested: bool = False
 
-    def update_containers(self, containers: List[Dict]):
-        """Update the containers list while preserving selection."""
+    def update_containers(self, grouped_containers: Dict[str, List[Dict]]):
+        """Rebuilds all data structures from the latest container data."""
         with self.lock:
             current_id = self._get_selected_container_id_unsafe()
-            self.all_containers = containers
-            self.container_id_to_index = {c.get("id"): i for i, c in enumerate(self.all_containers)}
 
-            if current_id and current_id in self.container_id_to_index:
-                self.selected_index = self.container_id_to_index[current_id]
+            # Rebuild all data structures
+            self.project_names = sorted(grouped_containers.keys())
+            self.all_containers = []
+            self.project_to_container_indices = {}
+            self.container_index_to_project_index = {}
+
+            flat_index = 0
+            for proj_index, proj_name in enumerate(self.project_names):
+                # Sort containers within each project for consistent order
+                containers_in_project = sorted(
+                    grouped_containers[proj_name], key=lambda c: c.get("name", "")
+                )
+                self.project_to_container_indices[proj_name] = []
+                for container in containers_in_project:
+                    self.all_containers.append(container)
+                    self.project_to_container_indices[proj_name].append(flat_index)
+                    self.container_index_to_project_index[flat_index] = proj_index
+                    flat_index += 1
+
+            container_id_to_index = {c.get("id"): i for i, c in enumerate(self.all_containers)}
+
+            # Restore selection if possible, otherwise reset
+            if current_id and current_id in container_id_to_index:
+                self.selected_index = container_id_to_index[current_id]
             elif self.all_containers:
                 self.selected_index = 0
             else:
                 self.selected_index = 0
+
+            # Ensure selection and scroll are within new bounds
+            self.selected_index = max(0, min(self.selected_index, len(self.all_containers) - 1))
+            self.scroll_offset = max(0, min(self.scroll_offset, len(self.project_names) - 1))
 
     def get_selected_container(self) -> Optional[Dict]:
         """Get the currently selected container."""
@@ -91,22 +121,58 @@ class AppState:
         return None
 
     def move_selection(self, delta: int):
-        """Move selection up/down by delta, clamping at the ends."""
+        """Move selection up/down, automatically scrolling the viewport if needed."""
         with self.lock:
             if not self.all_containers:
                 return
+
+            # calculate and clamp new selection index
             new_index = self.selected_index + delta
             self.selected_index = max(0, min(new_index, len(self.all_containers) - 1))
-            self.page_change_requested = False
+
+            # Find the project corresponding to the new selection
+            newly_selected_project_index = self.container_index_to_project_index.get(
+                self.selected_index
+            )
+            if newly_selected_project_index is None:
+                return  # Should not happen
+
+            # Check if the project is outside the current viewport and adjust scroll
+            is_above = newly_selected_project_index < self.scroll_offset
+            is_below = newly_selected_project_index >= (
+                self.scroll_offset + self.viewport_height_projects
+            )
+
+            if is_above:
+                # If selection moved above the viewport, scroll up to make it the top project
+                self.scroll_offset = newly_selected_project_index
+            elif is_below:
+                # If selection moved below, scroll down to make it the last visible project
+                self.scroll_offset = (
+                    newly_selected_project_index - self.viewport_height_projects + 1
+                )
+
+            # Ensure scroll offset is always valid
+            self.scroll_offset = max(0, min(self.scroll_offset, len(self.project_names) - 1))
+
         self.ui_updated_event.set()
 
-    def change_page(self, delta: int):
-        """Request a page change by delta, cycling through available pages."""
+    def scroll_project_view(self, delta: int):
+        """Scroll the project view and select the first container of the new top project."""
         with self.lock:
-            if self.total_pages <= 1:
+            if not self.project_names:
                 return
-            self.current_page = (self.current_page + delta + self.total_pages) % self.total_pages
-            self.page_change_requested = True
+
+            # Calculate and clamp new scroll offset
+            new_offset = self.scroll_offset + delta
+            self.scroll_offset = max(0, min(new_offset, len(self.project_names) - 1))
+
+            # Update selection to the first container of the new top project
+            scrolled_to_project_name = self.project_names[self.scroll_offset]
+            container_indices = self.project_to_container_indices.get(scrolled_to_project_name, [])
+            if container_indices:
+                self.selected_index = container_indices[0]
+
         self.ui_updated_event.set()
 
 
@@ -132,7 +198,7 @@ def run_docker_command(
     """Pauses the live display to run a Docker command."""
     live_display.stop()
     console.clear(home=True)
-    try:  # stopped container ko logs
+    try:
         is_streaming_interactive = (command[1] == "exec" and "-it" in command) or (
             command[1] == "logs" and "-f" in command
         )
@@ -182,8 +248,8 @@ def run_docker_command(
         live_display.start(refresh=True)
 
 
-def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
-    """Generate the main UI layout with dynamically paginated project tables."""
+def generate_ui(state: AppState) -> Layout:
+    """Generate the main UI layout based on the current AppState."""
     layout = Layout(name="root")
     layout.split(
         Layout(name="header", size=3), Layout(ratio=1, name="main"), Layout(size=1, name="footer")
@@ -196,152 +262,78 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
         header_text.append(" [DEBUG MODE]", style="bold red")
     layout["header"].update(Align.center(header_text))
 
-    all_project_names = sorted(groups.keys())
-    flat_list = [
-        c
-        for name in all_project_names
-        for c in sorted(groups[name], key=lambda x: x.get("name", ""))
-    ]
-    state.update_containers(flat_list)
+    with state.lock:
+        if not state.all_containers:
+            layout["main"].update(
+                Align.center(Text("No containers found.", style="yellow"), vertical="middle")
+            )
+        else:
+            # Viewport Calculation
+            chrome_height = 3 + 1 + 2  # header + footer + panel padding
+            available_height = max(8, console.height - chrome_height)
+            # Estimate height per project (title + header + avg containers)
+            avg_project_height = 7
+            projects_per_screen = max(1, available_height // avg_project_height)
+            state.viewport_height_projects = projects_per_screen
 
-    if not state.all_containers:
-        layout["main"].update(
-            Align.center(Text("No containers found.", style="yellow"), vertical="middle")
-        )
-        state.total_pages = 1
-        state.current_page = 0
-    else:
-        with state.lock:
-            # Calculate available space for content
-            chrome_height = 3 + 1 + 4
-            available_height = max(10, console.height - chrome_height)
+            # Determine which projects are visible based on scroll offset
+            start_idx = state.scroll_offset
+            end_idx = min(start_idx + projects_per_screen, len(state.project_names))
+            visible_project_names = state.project_names[start_idx:end_idx]
 
-            # Build pages ensuring compose (project)
-            pages: List[List[str]] = []
-            current_page_projects: List[str] = []
-            current_page_height = 0
+            # Render Visible Projects
+            visible_renderables = []
+            for proj_name in visible_project_names:
+                table = Table(
+                    title=f"Project: [bold cyan]{proj_name}[/bold cyan]",
+                    border_style="blue",
+                    expand=True,
+                    show_lines=False,
+                )
+                table.add_column("Container", style="cyan", no_wrap=True)
+                table.add_column("Status", justify="left")
+                table.add_column("Uptime", justify="right")
+                table.add_column("Health", justify="left")
+                table.add_column("CPU %", justify="right")
+                table.add_column("MEM USAGE / LIMIT", justify="right")
 
-            for proj_name in all_project_names:
-                containers_in_project = groups[proj_name]
-
-                # Calculate exact height
-                # Every Project ko lagi: title(1) + header_row(1) + container_rows + panel_borders(2) + spacing(1)
-                project_height = len(containers_in_project) + 5
-
-                # If adding this project would exceed available height AND current page is not empty
-                if current_page_projects and (
-                    current_page_height + project_height > available_height
-                ):
-                    # Finalize current page and start new one
-                    pages.append(current_page_projects[:])  # Copy the list
-                    current_page_projects = [proj_name]
-                    current_page_height = project_height
-                else:
-                    # Add project to current page
-                    current_page_projects.append(proj_name)
-                    current_page_height += project_height
-
-            # last page (include)
-            if current_page_projects:
-                pages.append(current_page_projects)
-
-            # euta page (compulsory)
-            if not pages:
-                pages = [[]]
-            state.total_pages = len(pages)
-
-            # Handle selection and page management
-            if state.all_containers:
-                selected_container = state.all_containers[state.selected_index]
-                selected_project = selected_container["project"]
-
-                # Find which page contains the selected container's project
-                page_with_selection = 0
-                for i, page_projects in enumerate(pages):
-                    if selected_project in page_projects:
-                        page_with_selection = i
-                        break
-
-                if state.page_change_requested:
-                    # if explicitly changed page - valid range mai basam
-                    state.current_page = max(0, min(state.current_page, state.total_pages - 1))
-
-                    # select every page ko first container
-                    if pages[state.current_page]:
-                        target_project = pages[state.current_page][0]
-                        for i, container in enumerate(state.all_containers):
-                            if container["project"] == target_project:
-                                state.selected_index = i
-                                break
-
-                    state.page_change_requested = False
-                else:
-                    state.current_page = page_with_selection
-            else:
-                state.current_page = 0
-
-            renderables_on_page = []
-            if state.current_page < len(pages):
-                displayed_projects = pages[state.current_page]
-
-                for proj_name in displayed_projects:
-                    # Create table
-                    table = Table(
-                        title=f"Project: [bold cyan]{proj_name}[/bold cyan]",
-                        border_style="blue",
-                        expand=True,
-                        show_lines=False,
+                container_indices = state.project_to_container_indices[proj_name]
+                for container_index in container_indices:
+                    container = state.all_containers[container_index]
+                    style = "on blue" if container_index == state.selected_index else ""
+                    uptime = (
+                        format_uptime(container.get("started_at"))
+                        if "Up" in container["status"]
+                        else "[grey50]—[/grey50]"
                     )
-                    table.add_column("Container", style="cyan", no_wrap=True)
-                    table.add_column("Status", justify="left")
-                    table.add_column("Uptime", justify="right")
-                    table.add_column("Health", justify="left")
-                    table.add_column("CPU %", justify="right")
-                    table.add_column("MEM USAGE / LIMIT", justify="right")
+                    table.add_row(
+                        container["name"],
+                        container["status"],
+                        uptime,
+                        container["health"],
+                        container["cpu"],
+                        container["memory"],
+                        style=style,
+                    )
+                visible_renderables.append(Panel(table, border_style="dim blue"))
 
-                    # Add containers
-                    project_containers = sorted(groups[proj_name], key=lambda c: c.get("name", ""))
-                    for container in project_containers:
-                        idx = state.container_id_to_index.get(container["id"])
-                        style = "on blue" if idx == state.selected_index else ""
+            # Scroll Indicator
+            scroll_info = ""
+            if len(state.project_names) > projects_per_screen:
+                scroll_info = (
+                    f"Showing projects {start_idx + 1}-{end_idx} of {len(state.project_names)}"
+                )
 
-                        uptime = (
-                            format_uptime(container.get("started_at"))
-                            if "Up" in container["status"]
-                            else "[grey50]—[/grey50]"
-                        )
-
-                        table.add_row(
-                            container["name"],
-                            container["status"],
-                            uptime,
-                            container["health"],
-                            container["cpu"],
-                            container["memory"],
-                            style=style,
-                        )
-
-                    renderables_on_page.append(Panel(table, border_style="dim blue"))
-
-            page_info = f"Page {state.current_page + 1} of {state.total_pages}"
             if state.debug_mode:
-                page_info += f" | Available Height: {available_height}"
+                debug_info = f" | Selected Index: {state.selected_index} | Scroll Offset: {state.scroll_offset}"
+                scroll_info += debug_info
 
-            if renderables_on_page:
-                layout["main"].update(
-                    Panel(Group(*renderables_on_page), title=page_info, border_style="dim blue")
-                )
-            else:
-                layout["main"].update(
-                    Panel(
-                        Text("No projects on this page", justify="center"),
-                        title=page_info,
-                        border_style="dim blue",
-                    )
-                )
+            layout["main"].update(
+                Panel(Group(*visible_renderables), title=scroll_info, border_style="dim blue")
+            )
 
     # Footer
-    footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate | [b]PgUp/PgDn[/b] Change Page"
+    footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate | [b]PgUp/PgDn[/b] Scroll Projects"
     if state.get_selected_container():
         footer_text += " | [b]L[/b]ogs | [b]R[/b]estart | [b]S[/b]hell | [b]X[/b] Stop"
     footer_text += " | [b]?[/b] Help"
@@ -356,8 +348,8 @@ def show_help_screen():
 [bold cyan]DockedUp - Interactive Docker Monitor[/bold cyan]
 
 [bold yellow]Navigation:[/bold yellow]
-  ↑/↓ or k/j    Navigate up/down (auto-scrolls pages)
-  PgUp/PgDn     Change page
+  ↑/↓ or k/j    Navigate up/down through containers.
+  PgUp/PgDn     Scroll through projects one-by-one.
   q or Ctrl+C   Quit DockedUp
 
 [bold yellow]Container Actions:[/bold yellow]
@@ -368,8 +360,6 @@ def show_help_screen():
 
 [bold yellow]Other:[/bold yellow]
   ?             Show this help screen
-
-[bold green]Tip:[/bold green] UI is responsive! Resize your terminal and see the pages adjust.
 """
     console.print(Panel(help_content, title="Help", border_style="cyan"))
     console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
@@ -412,9 +402,9 @@ def main(
                 elif key in (readchar.key.DOWN, "j"):
                     app_state.move_selection(1)
                 elif key == readchar.key.PAGE_UP:
-                    app_state.change_page(-1)
+                    app_state.scroll_project_view(-1)
                 elif key == readchar.key.PAGE_DOWN:
-                    app_state.change_page(1)
+                    app_state.scroll_project_view(1)
                 elif key == "?":
                     live.stop()
                     console.clear(home=True)
@@ -463,9 +453,12 @@ def main(
             monitor.run()
             input_thread = threading.Thread(target=input_worker, args=(live,), daemon=True)
             input_thread.start()
+
+            # Main render loop
             while not should_quit.is_set():
                 grouped_data = monitor.get_grouped_containers()
-                ui_layout = generate_ui(grouped_data, app_state)
+                app_state.update_containers(grouped_data)
+                ui_layout = generate_ui(app_state)
                 live.update(ui_layout, refresh=True)
                 app_state.ui_updated_event.wait(timeout=refresh_rate)
                 app_state.ui_updated_event.clear()
