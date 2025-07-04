@@ -53,27 +53,59 @@ class AppState:
     """Manages the application's shared interactive state with thread-safety."""
 
     def __init__(self):
+        # Data structures
         self.all_containers: List[Dict] = []
+        self.project_names: List[str] = []
+        self.project_to_container_indices: Dict[str, List[int]] = {}
+        self.container_index_to_project_index: Dict[int, int] = {}
+
+        # UI State
         self.selected_index: int = 0
-        self.container_id_to_index: Dict[str, int] = {}
+        self.scroll_offset: int = 0  # Index of the project at the top of the viewport
+        self.viewport_height_projects: int = 1  # How many projects fit on screen
+
+        # Control
         self.lock = threading.Lock()
         self.ui_updated_event = threading.Event()
         self.debug_mode: bool = False
-        self.scroll_offset: int = 0  # NEW: tracks which project/container to start displaying from
 
-    def update_containers(self, containers: List[Dict]):
-        """Update the containers list while preserving selection."""
+    def update_containers(self, grouped_containers: Dict[str, List[Dict]]):
+        """Rebuilds all data structures from the latest container data."""
         with self.lock:
             current_id = self._get_selected_container_id_unsafe()
-            self.all_containers = containers
-            self.container_id_to_index = {c.get("id"): i for i, c in enumerate(self.all_containers)}
 
-            if current_id and current_id in self.container_id_to_index:
-                self.selected_index = self.container_id_to_index[current_id]
+            # Rebuild all data structures
+            self.project_names = sorted(grouped_containers.keys())
+            self.all_containers = []
+            self.project_to_container_indices = {}
+            self.container_index_to_project_index = {}
+
+            flat_index = 0
+            for proj_index, proj_name in enumerate(self.project_names):
+                # Sort containers within each project for consistent order
+                containers_in_project = sorted(
+                    grouped_containers[proj_name], key=lambda c: c.get("name", "")
+                )
+                self.project_to_container_indices[proj_name] = []
+                for container in containers_in_project:
+                    self.all_containers.append(container)
+                    self.project_to_container_indices[proj_name].append(flat_index)
+                    self.container_index_to_project_index[flat_index] = proj_index
+                    flat_index += 1
+
+            container_id_to_index = {c.get("id"): i for i, c in enumerate(self.all_containers)}
+
+            # Restore selection if possible, otherwise reset
+            if current_id and current_id in container_id_to_index:
+                self.selected_index = container_id_to_index[current_id]
             elif self.all_containers:
                 self.selected_index = 0
             else:
                 self.selected_index = 0
+
+            # Ensure selection and scroll are within new bounds
+            self.selected_index = max(0, min(self.selected_index, len(self.all_containers) - 1))
+            self.scroll_offset = max(0, min(self.scroll_offset, len(self.project_names) - 1))
 
     def get_selected_container(self) -> Optional[Dict]:
         """Get the currently selected container."""
@@ -89,26 +121,57 @@ class AppState:
         return None
 
     def move_selection(self, delta: int):
-        """Move selection up/down by delta, clamping at the ends."""
+        """Move selection up/down, automatically scrolling the viewport if needed."""
         with self.lock:
             if not self.all_containers:
                 return
+
+            # calculate and clamp new selection index
             new_index = self.selected_index + delta
             self.selected_index = max(0, min(new_index, len(self.all_containers) - 1))
+
+            # Find the project corresponding to the new selection
+            newly_selected_project_index = self.container_index_to_project_index.get(
+                self.selected_index
+            )
+            if newly_selected_project_index is None:
+                return  # Should not happen
+
+            # Check if the project is outside the current viewport and adjust scroll
+            is_above = newly_selected_project_index < self.scroll_offset
+            is_below = newly_selected_project_index >= (
+                self.scroll_offset + self.viewport_height_projects
+            )
+
+            if is_above:
+                # If selection moved above the viewport, scroll up to make it the top project
+                self.scroll_offset = newly_selected_project_index
+            elif is_below:
+                # If selection moved below, scroll down to make it the last visible project
+                self.scroll_offset = (
+                    newly_selected_project_index - self.viewport_height_projects + 1
+                )
+
+            # Ensure scroll offset is always valid
+            self.scroll_offset = max(0, min(self.scroll_offset, len(self.project_names) - 1))
+
         self.ui_updated_event.set()
 
-    def scroll_view(self, delta: int):
-        """Scroll the view up/down by delta positions."""
+    def scroll_project_view(self, delta: int):
+        """Scroll the project view and select the first container of the new top project."""
         with self.lock:
-            if not self.all_containers:
+            if not self.project_names:
                 return
 
-            # Calculate max scroll position
-            max_scroll = max(0, len(self.all_containers) - 1)
-
-            # Update scroll offset
+            # Calculate and clamp new scroll offset
             new_offset = self.scroll_offset + delta
-            self.scroll_offset = max(0, min(new_offset, max_scroll))
+            self.scroll_offset = max(0, min(new_offset, len(self.project_names) - 1))
+
+            # Update selection to the first container of the new top project
+            scrolled_to_project_name = self.project_names[self.scroll_offset]
+            container_indices = self.project_to_container_indices.get(scrolled_to_project_name, [])
+            if container_indices:
+                self.selected_index = container_indices[0]
 
         self.ui_updated_event.set()
 
@@ -185,8 +248,8 @@ def run_docker_command(
         live_display.start(refresh=True)
 
 
-def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
-    """Generate the main UI layout with scrollable project tables (KEEPING YOUR ORIGINAL STRUCTURE)."""
+def generate_ui(state: AppState) -> Layout:
+    """Generate the main UI layout based on the current AppState."""
     layout = Layout(name="root")
     layout.split(
         Layout(name="header", size=3), Layout(ratio=1, name="main"), Layout(size=1, name="footer")
@@ -199,32 +262,28 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
         header_text.append(" [DEBUG MODE]", style="bold red")
     layout["header"].update(Align.center(header_text))
 
-    all_project_names = sorted(groups.keys())
-    flat_list = [
-        c
-        for name in all_project_names
-        for c in sorted(groups[name], key=lambda x: x.get("name", ""))
-    ]
-    state.update_containers(flat_list)
-
-    if not state.all_containers:
-        layout["main"].update(
-            Align.center(Text("No containers found.", style="yellow"), vertical="middle")
-        )
-    else:
-        with state.lock:
-            # Calculate available space for content
-            chrome_height = 3 + 1 + 2  # header + footer + some padding
+    with state.lock:
+        if not state.all_containers:
+            layout["main"].update(
+                Align.center(Text("No containers found.", style="yellow"), vertical="middle")
+            )
+        else:
+            # Viewport Calculation
+            chrome_height = 3 + 1 + 2  # header + footer + panel padding
             available_height = max(8, console.height - chrome_height)
+            # Estimate height per project (title + header + avg containers)
+            avg_project_height = 7
+            projects_per_screen = max(1, available_height // avg_project_height)
+            state.viewport_height_projects = projects_per_screen
 
-            # Create a list of all renderable items (projects + containers)
-            all_renderables = []
-            container_index = 0
+            # Determine which projects are visible based on scroll offset
+            start_idx = state.scroll_offset
+            end_idx = min(start_idx + projects_per_screen, len(state.project_names))
+            visible_project_names = state.project_names[start_idx:end_idx]
 
-            for proj_name in all_project_names:
-                containers_in_project = sorted(groups[proj_name], key=lambda c: c.get("name", ""))
-
-                # Create table for this project
+            # Render Visible Projects
+            visible_renderables = []
+            for proj_name in visible_project_names:
                 table = Table(
                     title=f"Project: [bold cyan]{proj_name}[/bold cyan]",
                     border_style="blue",
@@ -238,16 +297,15 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
                 table.add_column("CPU %", justify="right")
                 table.add_column("MEM USAGE / LIMIT", justify="right")
 
-                # Add containers to this project's table
-                for container in containers_in_project:
+                container_indices = state.project_to_container_indices[proj_name]
+                for container_index in container_indices:
+                    container = state.all_containers[container_index]
                     style = "on blue" if container_index == state.selected_index else ""
-
                     uptime = (
                         format_uptime(container.get("started_at"))
                         if "Up" in container["status"]
                         else "[grey50]—[/grey50]"
                     )
-
                     table.add_row(
                         container["name"],
                         container["status"],
@@ -257,44 +315,25 @@ def generate_ui(groups: Dict[str, List[Dict]], state: AppState) -> Layout:
                         container["memory"],
                         style=style,
                     )
-                    container_index += 1
+                visible_renderables.append(Panel(table, border_style="dim blue"))
 
-                all_renderables.append(Panel(table, border_style="dim blue"))
-
-            # Apply scrolling - show only the renderables that fit in available space
-            if len(all_renderables) > 0:
-                # Calculate how many projects we can show
-                projects_per_screen = max(1, available_height // 8)  # Rough estimate
-
-                # Apply scroll offset
-                start_idx = min(state.scroll_offset, max(0, len(all_renderables) - 1))
-                end_idx = min(start_idx + projects_per_screen, len(all_renderables))
-
-                visible_renderables = all_renderables[start_idx:end_idx]
-
-                # Create scroll indicator
-                if len(all_renderables) > projects_per_screen:
-                    scroll_info = f"Showing projects {start_idx + 1}-{end_idx} of {len(all_renderables)} | Scroll: {state.scroll_offset}"
-                else:
-                    scroll_info = f"Showing all {len(all_renderables)} projects"
-
-                if state.debug_mode:
-                    scroll_info += f" | Selected: {state.selected_index} | Available Height: {available_height}"
-
-                layout["main"].update(
-                    Panel(Group(*visible_renderables), title=scroll_info, border_style="dim blue")
+            # Scroll Indicator
+            scroll_info = ""
+            if len(state.project_names) > projects_per_screen:
+                scroll_info = (
+                    f"Showing projects {start_idx + 1}-{end_idx} of {len(state.project_names)}"
                 )
-            else:
-                layout["main"].update(
-                    Panel(
-                        Text("No projects to display", justify="center"),
-                        title="No Data",
-                        border_style="dim blue",
-                    )
-                )
+
+            if state.debug_mode:
+                debug_info = f" | Selected Index: {state.selected_index} | Scroll Offset: {state.scroll_offset}"
+                scroll_info += debug_info
+
+            layout["main"].update(
+                Panel(Group(*visible_renderables), title=scroll_info, border_style="dim blue")
+            )
 
     # Footer
-    footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate | [b]PgUp/PgDn[/b] Scroll View"
+    footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate | [b]PgUp/PgDn[/b] Scroll Projects"
     if state.get_selected_container():
         footer_text += " | [b]L[/b]ogs | [b]R[/b]estart | [b]S[/b]hell | [b]X[/b] Stop"
     footer_text += " | [b]?[/b] Help"
@@ -309,8 +348,8 @@ def show_help_screen():
 [bold cyan]DockedUp - Interactive Docker Monitor[/bold cyan]
 
 [bold yellow]Navigation:[/bold yellow]
-  ↑/↓ or k/j    Navigate up/down through containers
-  PgUp/PgDn     Scroll view up/down
+  ↑/↓ or k/j    Navigate up/down through containers.
+  PgUp/PgDn     Scroll through projects one-by-one.
   q or Ctrl+C   Quit DockedUp
 
 [bold yellow]Container Actions:[/bold yellow]
@@ -321,8 +360,6 @@ def show_help_screen():
 
 [bold yellow]Other:[/bold yellow]
   ?             Show this help screen
-
-[bold green]Tip:[/bold green] Use PgUp/PgDn to scroll through projects when you have many containers!
 """
     console.print(Panel(help_content, title="Help", border_style="cyan"))
     console.input("\n[bold]Press Enter to return to DockedUp...[/bold]")
@@ -365,9 +402,9 @@ def main(
                 elif key in (readchar.key.DOWN, "j"):
                     app_state.move_selection(1)
                 elif key == readchar.key.PAGE_UP:
-                    app_state.scroll_view(-1)
+                    app_state.scroll_project_view(-1)
                 elif key == readchar.key.PAGE_DOWN:
-                    app_state.scroll_view(1)
+                    app_state.scroll_project_view(1)
                 elif key == "?":
                     live.stop()
                     console.clear(home=True)
@@ -416,9 +453,12 @@ def main(
             monitor.run()
             input_thread = threading.Thread(target=input_worker, args=(live,), daemon=True)
             input_thread.start()
+
+            # Main render loop
             while not should_quit.is_set():
                 grouped_data = monitor.get_grouped_containers()
-                ui_layout = generate_ui(grouped_data, app_state)
+                app_state.update_containers(grouped_data)
+                ui_layout = generate_ui(app_state)
                 live.update(ui_layout, refresh=True)
                 app_state.ui_updated_event.wait(timeout=refresh_rate)
                 app_state.ui_updated_event.clear()
