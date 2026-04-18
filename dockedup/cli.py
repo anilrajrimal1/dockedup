@@ -371,6 +371,9 @@ def main(
         float, typer.Option("--refresh", "-r", help="UI refresh rate in seconds", min=0.1)
     ] = 1.0,
     debug: Annotated[bool, typer.Option("--debug", "-d", help="Enable debug mode")] = False,
+    no_stats: Annotated[
+        bool, typer.Option("--no-stats", help="Disable real-time stats collection (useful for remote connections)")
+    ] = False,
     version: Annotated[
         Optional[bool], typer.Option("--version", "-v", callback=version_callback, is_eager=True)
     ] = None,
@@ -379,13 +382,24 @@ def main(
     setup_logging(debug=debug)
 
     try:
-        client = docker.from_env(timeout=5)
+        client = docker.from_env(timeout=10)
         client.ping()
     except DockerException as e:
         console.print(f"[bold red]Error: Failed to connect to Docker.[/bold red]\nDetails: {e}")
         raise typer.Exit(code=1)
 
-    monitor = ContainerMonitor(client)
+    # Auto-detect remote connection and warn user
+    is_remote = False
+    try:
+        base_url = client.api.base_url
+        is_remote = base_url.startswith(('ssh://', 'tcp://', 'http://')) if base_url else False
+        if is_remote and debug:
+            console.print(f"[yellow]Detected remote Docker connection: {base_url}[/yellow]")
+            console.print("[yellow]Using optimized polling mode for stats collection...[/yellow]")
+    except Exception:
+        pass
+
+    monitor = ContainerMonitor(client, enable_stats=not no_stats)
     app_state = AppState()
     app_state.debug_mode = debug
     should_quit = threading.Event()
