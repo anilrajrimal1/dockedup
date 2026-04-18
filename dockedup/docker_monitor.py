@@ -4,8 +4,10 @@ Docker container monitoring with real-time stats collection.
 
 import threading
 import logging
+import time
 from collections import defaultdict
 from typing import Dict, List, Any, Optional
+from http.client import IncompleteRead
 
 from docker.client import DockerClient
 from docker.errors import DockerException, NotFound
@@ -30,13 +32,23 @@ class ContainerMonitor:
     and resource usage statistics through Docker's event stream and stats API.
     """
 
-    def __init__(self, client: DockerClient):
+    def __init__(self, client: DockerClient, enable_stats: bool = True):
         self.client = client
         self.containers: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.stats_threads: Dict[str, threading.Thread] = {}
         self._event_thread: Optional[threading.Thread] = None
+        self.enable_stats = enable_stats
+        self._is_remote_connection = self._check_remote_connection()
+
+    def _check_remote_connection(self) -> bool:
+        """Check if this is a remote Docker connection (SSH, TCP)."""
+        try:
+            base_url = self.client.api.base_url
+            return base_url.startswith(('ssh://', 'tcp://', 'http://')) if base_url else False
+        except Exception:
+            return False
 
     def _stats_worker(self, container_id: str):
         """
@@ -45,33 +57,110 @@ class ContainerMonitor:
         Args:
             container_id: The container ID to monitor
         """
-        try:
-            logger.debug(f"Starting stats collection for container {container_id[:12]}")
-            stats_stream = self.client.api.stats(container=container_id, stream=True, decode=True)
+        retry_count = 0
+        max_retries = 3 if self._is_remote_connection else 1
+        backoff_delay = 2.0
 
-            for stats in stats_stream:
-                if self.stop_event.is_set():
-                    logger.debug(f"Stop event set, ending stats collection for {container_id[:12]}")
-                    break
+        while retry_count <= max_retries and not self.stop_event.is_set():
+            try:
+                logger.debug(f"Starting stats collection for container {container_id[:12]} (attempt {retry_count + 1})")
 
+                # For remote connections, use non-streaming stats with polling
+                if self._is_remote_connection:
+                    while not self.stop_event.is_set():
+                        with self.lock:
+                            if container_id not in self.containers:
+                                logger.debug(f"Container {container_id[:12]} removed during stats collection")
+                                return
+
+                        try:
+                            # Get single stats snapshot (stream=False)
+                            stats = self.client.api.stats(container=container_id, stream=False, decode=True)
+
+                            with self.lock:
+                                if container_id in self.containers:
+                                    self.containers[container_id]["cpu"] = calculate_cpu_percent(stats)
+                                    self.containers[container_id]["memory"] = format_memory_stats(
+                                        stats.get("memory_stats", {})
+                                    )
+                                else:
+                                    logger.debug(f"Container {container_id[:12]} removed during stats collection")
+                                    return
+
+                            # Poll interval for remote connections (reduce network overhead)
+                            time.sleep(2.0)
+
+                        except (IncompleteRead, ConnectionError, BrokenPipeError) as e:
+                            logger.debug(f"Network error getting stats for {container_id[:12]}: {e}")
+                            # Don't remove container, just retry after delay
+                            time.sleep(1.0)
+                            continue
+
+                else:
+                    # Local connection: use streaming stats
+                    stats_stream = self.client.api.stats(container=container_id, stream=True, decode=True)
+
+                    for stats in stats_stream:
+                        if self.stop_event.is_set():
+                            logger.debug(f"Stop event set, ending stats collection for {container_id[:12]}")
+                            return
+
+                        with self.lock:
+                            if container_id in self.containers:
+                                self.containers[container_id]["cpu"] = calculate_cpu_percent(stats)
+                                self.containers[container_id]["memory"] = format_memory_stats(
+                                    stats.get("memory_stats", {})
+                                )
+                            else:
+                                logger.debug(f"Container {container_id[:12]} removed during stats collection")
+                                return
+
+                # If we got here without exception, stats collection completed successfully
+                return
+
+            except NotFound as e:
+                logger.debug(f"Container {container_id[:12]} not found: {e}")
+                # Container was removed, this is expected
+                self._remove_container(container_id)
+                return
+
+            except (IncompleteRead, ConnectionError, BrokenPipeError, OSError) as e:
+                retry_count += 1
+                logger.warning(
+                    f"Network error in stats worker for {container_id[:12]} (attempt {retry_count}/{max_retries + 1}): {e}"
+                )
+
+                if retry_count > max_retries:
+                    logger.warning(
+                        f"Max retries reached for {container_id[:12]}, disabling stats (container still visible)"
+                    )
+                    # Don't remove container, just stop collecting stats
+                    with self.lock:
+                        if container_id in self.containers:
+                            self.containers[container_id]["cpu"] = "[grey50]—[/grey50]"
+                            self.containers[container_id]["memory"] = "[grey50]—[/grey50]"
+                    return
+
+                # Exponential backoff before retry
+                time.sleep(backoff_delay * retry_count)
+
+            except DockerException as e:
+                logger.debug(f"Docker error in stats worker for {container_id[:12]}: {e}")
+                # Don't remove container on generic Docker errors
                 with self.lock:
                     if container_id in self.containers:
-                        self.containers[container_id]["cpu"] = calculate_cpu_percent(stats)
-                        self.containers[container_id]["memory"] = format_memory_stats(
-                            stats.get("memory_stats", {})
-                        )
-                    else:
-                        logger.debug(
-                            f"Container {container_id[:12]} removed during stats collection"
-                        )
-                        break
+                        self.containers[container_id]["cpu"] = "[grey50]—[/grey50]"
+                        self.containers[container_id]["memory"] = "[grey50]—[/grey50]"
+                return
 
-        except (NotFound, DockerException) as e:
-            logger.debug(f"Container {container_id[:12]} stats stream ended: {e}")
-            self._remove_container(container_id)
-        except Exception as e:
-            logger.error(f"Unexpected error in stats worker for {container_id[:12]}: {e}")
-            self._remove_container(container_id)
+            except Exception as e:
+                logger.error(f"Unexpected error in stats worker for {container_id[:12]}: {e}")
+                # Don't remove container on unexpected errors
+                with self.lock:
+                    if container_id in self.containers:
+                        self.containers[container_id]["cpu"] = "[grey50]—[/grey50]"
+                        self.containers[container_id]["memory"] = "[grey50]—[/grey50]"
+                return
 
     def _event_worker(self):
         """
@@ -156,7 +245,7 @@ class ContainerMonitor:
             is_running = state.get("Status") == "running"
             has_stats_thread = container_id in self.stats_threads
 
-            if is_running and not has_stats_thread:
+            if is_running and not has_stats_thread and self.enable_stats:
                 thread = threading.Thread(
                     target=self._stats_worker,
                     args=(container_id,),
