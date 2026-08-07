@@ -94,10 +94,14 @@ Once DockedUp is running, use these keyboard shortcuts:
 | Key | Action |
 |-----|--------|
 | `↑/↓` or `k/j` | Navigate up/down |
+| `PgUp/PgDn` | Scroll through projects |
+| `/` | Filter by container or project name |
+| `p` | Toggle project mode (act on a whole project at once) |
 | `l` | View live logs |
-| `r` | Restart container (with confirmation) |
+| `r` | Restart container, or whole project in project mode (with confirmation) |
 | `s` | Open shell session |
-| `x` | Stop container (with confirmation) |
+| `x` | Stop container, or whole project in project mode (with confirmation) |
+| `i` | Show full container details (image, mounts, networks...) |
 | `?` | Show help screen |
 | `q` or `Ctrl+C` | Quit DockedUp |
 
