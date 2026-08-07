@@ -7,7 +7,6 @@ from docker.errors import NotFound
 
 from dockedup.docker_monitor import ContainerMonitor
 
-
 # --- MOCK DATA FIXTURES ---
 
 
@@ -43,6 +42,7 @@ def mock_container_data_exited():
 def mock_docker_client(mocker, mock_container_data_running, mock_container_data_exited):
     """A comprehensive mock of the Docker client."""
     mock_client = MagicMock()
+    mock_client.api.base_url = "unix:///var/run/docker.sock"
 
     mock_container_obj1 = MagicMock()
     mock_container_obj1.id = "container1_id"

@@ -5,6 +5,16 @@ All notable changes to DockedUp will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Filter/search**: Press `/` to filter the container list by container or project name
+- **Project mode**: Press `p` to select a whole Compose project and restart or stop every container in it at once
+- **Container detail view**: Press `i` to see image, command, entrypoint, mounts, networks and restart policy for the selected container
+
+### Changed
+- **Command execution**: Interactive commands (`logs -f`, `exec -it`) now run through `subprocess` instead of `os.system`
+
 ## [1.0.2] - 2026-04-18
 
 ### Fixed

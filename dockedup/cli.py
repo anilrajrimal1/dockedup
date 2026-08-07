@@ -5,7 +5,6 @@ DockedUp CLI - Interactive Docker Compose stack monitor.
 import time
 import subprocess
 import threading
-import os
 import logging
 from typing import Dict, List, Optional
 from typing_extensions import Annotated
@@ -64,18 +63,49 @@ class AppState:
         self.scroll_offset: int = 0  # Index of the project at the top of the viewport
         self.viewport_height_projects: int = 1  # How many projects fit on screen
 
+        # Filter state
+        self.filter_text: str = ""
+        self.filter_typing: bool = False
+        self.total_container_count: int = 0
+
+        # Project-select mode state
+        self.project_mode: bool = False
+        self.selected_project_index: int = 0
+
         # Control
         self.lock = threading.Lock()
         self.ui_updated_event = threading.Event()
         self.debug_mode: bool = False
 
+    def _apply_filter_unsafe(
+        self, grouped_containers: Dict[str, List[Dict]]
+    ) -> Dict[str, List[Dict]]:
+        """Filter projects/containers by filter_text (internal use, lock must be held)."""
+        if not self.filter_text:
+            return grouped_containers
+
+        needle = self.filter_text.lower()
+        filtered: Dict[str, List[Dict]] = {}
+        for project_name, containers in grouped_containers.items():
+            if needle in project_name.lower():
+                filtered[project_name] = containers
+                continue
+            matched = [c for c in containers if needle in c.get("name", "").lower()]
+            if matched:
+                filtered[project_name] = matched
+        return filtered
+
     def update_containers(self, grouped_containers: Dict[str, List[Dict]]):
         """Rebuilds all data structures from the latest container data."""
         with self.lock:
             current_id = self._get_selected_container_id_unsafe()
+            current_project = self._get_selected_project_name_unsafe()
+
+            self.total_container_count = sum(len(v) for v in grouped_containers.values())
+            visible_containers = self._apply_filter_unsafe(grouped_containers)
 
             # Rebuild all data structures
-            self.project_names = sorted(grouped_containers.keys())
+            self.project_names = sorted(visible_containers.keys())
             self.all_containers = []
             self.project_to_container_indices = {}
             self.container_index_to_project_index = {}
@@ -84,7 +114,7 @@ class AppState:
             for proj_index, proj_name in enumerate(self.project_names):
                 # Sort containers within each project for consistent order
                 containers_in_project = sorted(
-                    grouped_containers[proj_name], key=lambda c: c.get("name", "")
+                    visible_containers[proj_name], key=lambda c: c.get("name", "")
                 )
                 self.project_to_container_indices[proj_name] = []
                 for container in containers_in_project:
@@ -107,6 +137,15 @@ class AppState:
             self.selected_index = max(0, min(self.selected_index, len(self.all_containers) - 1))
             self.scroll_offset = max(0, min(self.scroll_offset, len(self.project_names) - 1))
 
+            # Restore project selection if possible, otherwise reset
+            if current_project and current_project in self.project_names:
+                self.selected_project_index = self.project_names.index(current_project)
+            else:
+                self.selected_project_index = 0
+            self.selected_project_index = max(
+                0, min(self.selected_project_index, len(self.project_names) - 1)
+            )
+
     def get_selected_container(self) -> Optional[Dict]:
         """Get the currently selected container."""
         with self.lock:
@@ -119,6 +158,23 @@ class AppState:
         if self.all_containers and 0 <= self.selected_index < len(self.all_containers):
             return self.all_containers[self.selected_index].get("id")
         return None
+
+    def _get_selected_project_name_unsafe(self) -> Optional[str]:
+        """Get selected project name without acquiring lock (internal use)."""
+        if self.project_names and 0 <= self.selected_project_index < len(self.project_names):
+            return self.project_names[self.selected_project_index]
+        return None
+
+    def get_selected_project_name(self) -> Optional[str]:
+        """Get the currently selected project name (project-select mode)."""
+        with self.lock:
+            return self._get_selected_project_name_unsafe()
+
+    def get_containers_in_project(self, project_name: str) -> List[Dict]:
+        """Get all containers belonging to a project."""
+        with self.lock:
+            indices = self.project_to_container_indices.get(project_name, [])
+            return [self.all_containers[i] for i in indices]
 
     def move_selection(self, delta: int):
         """Move selection up/down, automatically scrolling the viewport if needed."""
@@ -175,6 +231,73 @@ class AppState:
 
         self.ui_updated_event.set()
 
+    def toggle_project_mode(self):
+        """Toggle project-select mode, syncing the selected project to the current container."""
+        with self.lock:
+            self.project_mode = not self.project_mode
+            if self.project_mode:
+                proj_index = self.container_index_to_project_index.get(self.selected_index)
+                if proj_index is not None:
+                    self.selected_project_index = proj_index
+            self.selected_project_index = max(
+                0, min(self.selected_project_index, len(self.project_names) - 1)
+            )
+        self.ui_updated_event.set()
+
+    def move_project_selection(self, delta: int):
+        """Move project selection up/down, scrolling the viewport if needed."""
+        with self.lock:
+            if not self.project_names:
+                return
+
+            new_index = self.selected_project_index + delta
+            self.selected_project_index = max(0, min(new_index, len(self.project_names) - 1))
+
+            is_above = self.selected_project_index < self.scroll_offset
+            is_below = self.selected_project_index >= (
+                self.scroll_offset + self.viewport_height_projects
+            )
+
+            if is_above:
+                self.scroll_offset = self.selected_project_index
+            elif is_below:
+                self.scroll_offset = self.selected_project_index - self.viewport_height_projects + 1
+
+            self.scroll_offset = max(0, min(self.scroll_offset, len(self.project_names) - 1))
+
+        self.ui_updated_event.set()
+
+    def start_filter_typing(self):
+        """Enter filter-typing mode, keeping any existing filter text to refine."""
+        with self.lock:
+            self.filter_typing = True
+        self.ui_updated_event.set()
+
+    def append_filter_char(self, char: str):
+        """Append a character to the filter text."""
+        with self.lock:
+            self.filter_text += char
+        self.ui_updated_event.set()
+
+    def backspace_filter(self):
+        """Remove the last character of the filter text."""
+        with self.lock:
+            self.filter_text = self.filter_text[:-1]
+        self.ui_updated_event.set()
+
+    def confirm_filter(self):
+        """Exit filter-typing mode, keeping the filter applied."""
+        with self.lock:
+            self.filter_typing = False
+        self.ui_updated_event.set()
+
+    def clear_filter(self):
+        """Clear the filter text and exit filter-typing mode."""
+        with self.lock:
+            self.filter_text = ""
+            self.filter_typing = False
+        self.ui_updated_event.set()
+
 
 def setup_logging(debug: bool = False):
     """Configure logging based on user preferences."""
@@ -215,12 +338,11 @@ def run_docker_command(
                 return
 
         if is_streaming_interactive:
-            command_str = " ".join(command)
-            if "logs -f" in command_str:
+            if command[1] == "logs" and "-f" in command:
                 console.print(
                     f"[bold cyan]Showing live logs for '{container_name}'. Press Ctrl+C to return.[/bold cyan]"
                 )
-            os.system(command_str)
+            subprocess.run(command, check=False)
         else:
             result = subprocess.run(command, capture_output=True, text=True, check=False)
             if result.returncode != 0:
@@ -248,6 +370,85 @@ def run_docker_command(
         live_display.start(refresh=True)
 
 
+ACTION_PAST_TENSE = {"restart": "Restarted", "stop": "Stopped"}
+
+
+def run_bulk_docker_command(
+    live_display: Live, action: str, containers: List[Dict], project_name: str
+):
+    """Pauses the live display to run a Docker command against every container in a project."""
+    if not containers:
+        return
+
+    live_display.stop()
+    console.clear(home=True)
+    try:
+        console.print(
+            f"\n[bold yellow]Are you sure you want to {action} all {len(containers)} "
+            f"container(s) in project '{project_name}'? (y/n)[/bold yellow]"
+        )
+        key = readchar.readkey().lower()
+        if key != "y":
+            console.print("[green]Aborted.[/green]")
+            time.sleep(1)
+            return
+
+        container_ids = [c["id"] for c in containers]
+        result = subprocess.run(
+            ["docker", action, *container_ids], capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            console.print(f"[bold red]Command failed (exit code {result.returncode}):[/bold red]")
+            output = result.stderr.strip() or result.stdout.strip()
+            if output:
+                console.print(output)
+        else:
+            verb = ACTION_PAST_TENSE.get(action, action.capitalize())
+            console.print(
+                f"[green]✅ {verb} {len(containers)} container(s) in project "
+                f"'{project_name}'.[/green]"
+            )
+        console.input("\n[bold]Press Enter to return...[/bold]")
+
+    except Exception as e:
+        logger.error(f"Failed to execute bulk command: {e}")
+        console.print(f"[bold red]Failed to execute command:[/bold red]\n{e}")
+        console.input("\n[bold]Press Enter to return...[/bold]")
+    finally:
+        live_display.start(refresh=True)
+
+
+def show_detail_screen(container: Dict):
+    """Display full inspect details for a single container."""
+    name = container.get("name", "unknown")
+    ports = container.get("ports", "[grey50]—[/grey50]")
+    networks = ", ".join(container.get("networks") or []) or "—"
+    mounts = container.get("mounts") or []
+
+    lines = [
+        f"[bold yellow]Status:[/bold yellow]      {container.get('status', '—')}",
+        f"[bold yellow]Health:[/bold yellow]      {container.get('health', '—')}",
+        f"[bold yellow]Project:[/bold yellow]     {container.get('project', '—')}",
+        f"[bold yellow]Image:[/bold yellow]       {container.get('image') or '—'}",
+        f"[bold yellow]Command:[/bold yellow]     {container.get('command') or '—'}",
+        f"[bold yellow]Entrypoint:[/bold yellow]  {container.get('entrypoint') or '—'}",
+        f"[bold yellow]Restart:[/bold yellow]     {container.get('restart_policy') or '—'}",
+        f"[bold yellow]Networks:[/bold yellow]    {networks}",
+        "",
+        "[bold yellow]Ports:[/bold yellow]",
+        f"  {ports}",
+        "",
+        "[bold yellow]Mounts:[/bold yellow]",
+    ]
+    if mounts:
+        lines.extend(f"  {m}" for m in mounts)
+    else:
+        lines.append("  —")
+
+    console.print(Panel("\n".join(lines), title=f"Container Details: {name}", border_style="cyan"))
+    console.input("\n[bold]Press Enter to return...[/bold]")
+
+
 def generate_ui(state: AppState) -> Layout:
     """Generate the main UI layout based on the current AppState."""
     layout = Layout(name="root")
@@ -260,13 +461,14 @@ def generate_ui(state: AppState) -> Layout:
     )
     if state.debug_mode:
         header_text.append(" [DEBUG MODE]", style="bold red")
+    if state.project_mode:
+        header_text.append(" [PROJECT MODE]", style="bold yellow")
     layout["header"].update(Align.center(header_text))
 
     with state.lock:
         if not state.all_containers:
-            layout["main"].update(
-                Align.center(Text("No containers found.", style="yellow"), vertical="middle")
-            )
+            message = "No containers match filter." if state.filter_text else "No containers found."
+            layout["main"].update(Align.center(Text(message, style="yellow"), vertical="middle"))
         else:
             # Viewport Calculation
             chrome_height = 3 + 1 + 2  # header + footer + panel padding
@@ -283,7 +485,12 @@ def generate_ui(state: AppState) -> Layout:
 
             # Render Visible Projects
             visible_renderables = []
-            for proj_name in visible_project_names:
+            for offset, proj_name in enumerate(visible_project_names):
+                global_proj_index = start_idx + offset
+                is_selected_project = (
+                    state.project_mode and global_proj_index == state.selected_project_index
+                )
+
                 table = Table(
                     title=f"Project: [bold cyan]{proj_name}[/bold cyan]",
                     border_style="blue",
@@ -300,7 +507,11 @@ def generate_ui(state: AppState) -> Layout:
                 container_indices = state.project_to_container_indices[proj_name]
                 for container_index in container_indices:
                     container = state.all_containers[container_index]
-                    style = "on blue" if container_index == state.selected_index else ""
+                    style = (
+                        "on blue"
+                        if (not state.project_mode and container_index == state.selected_index)
+                        else ""
+                    )
                     uptime = (
                         format_uptime(container.get("started_at"))
                         if "Up" in container["status"]
@@ -315,7 +526,9 @@ def generate_ui(state: AppState) -> Layout:
                         container["memory"],
                         style=style,
                     )
-                visible_renderables.append(Panel(table, border_style="dim blue"))
+
+                panel_border_style = "bold yellow" if is_selected_project else "dim blue"
+                visible_renderables.append(Panel(table, border_style=panel_border_style))
 
             # Scroll Indicator
             scroll_info = ""
@@ -323,6 +536,14 @@ def generate_ui(state: AppState) -> Layout:
                 scroll_info = (
                     f"Showing projects {start_idx + 1}-{end_idx} of {len(state.project_names)}"
                 )
+
+            if state.filter_text:
+                shown = len(state.all_containers)
+                filter_info = (
+                    f"{shown}/{state.total_container_count} containers match "
+                    f"'{state.filter_text}'"
+                )
+                scroll_info = f"{scroll_info} | {filter_info}" if scroll_info else filter_info
 
             if state.debug_mode:
                 debug_info = f" | Selected Index: {state.selected_index} | Scroll Offset: {state.scroll_offset}"
@@ -333,10 +554,29 @@ def generate_ui(state: AppState) -> Layout:
             )
 
     # Footer
-    footer_text = "[b]Q[/b]uit | [b]↑/↓[/b] Navigate | [b]PgUp/PgDn[/b] Scroll Projects"
-    if state.get_selected_container():
-        footer_text += " | [b]L[/b]ogs | [b]R[/b]estart | [b]S[/b]hell | [b]X[/b] Stop"
-    footer_text += " | [b]?[/b] Help"
+    if state.filter_typing:
+        footer_text = f"[b]/[/b] {state.filter_text}█  Enter=apply  Esc=clear"
+    else:
+        parts = ["[b]Q[/b]uit", "[b]↑/↓[/b] Navigate", "[b]PgUp/PgDn[/b] Scroll Projects"]
+        if state.project_mode:
+            parts += [
+                "[b]R[/b]estart project",
+                "[b]X[/b] Stop project",
+                "[b]P[/b] Exit project mode",
+            ]
+        else:
+            parts.append("[b]/[/b] Filter")
+            parts.append("[b]P[/b] Project mode")
+            if state.get_selected_container():
+                parts += [
+                    "[b]L[/b]ogs",
+                    "[b]R[/b]estart",
+                    "[b]S[/b]hell",
+                    "[b]X[/b] Stop",
+                    "[b]I[/b]nfo",
+                ]
+        parts.append("[b]?[/b] Help")
+        footer_text = " | ".join(parts)
     layout["footer"].update(Align.center(footer_text))
 
     return layout
@@ -357,6 +597,18 @@ def show_help_screen():
   r             Restart container (with confirmation)
   s             Open shell session (in running containers)
   x             Stop container (with confirmation)
+  i             Show full container details (image, mounts, networks...)
+
+[bold yellow]Filter:[/bold yellow]
+  /             Start typing a filter (matches container or project name)
+  Enter         Apply filter and keep browsing
+  Esc           Clear filter
+
+[bold yellow]Project Mode:[/bold yellow]
+  p             Toggle project mode
+  ↑/↓ or k/j    Select a project (while in project mode)
+  r             Restart every container in the selected project
+  x             Stop every container in the selected project
 
 [bold yellow]Other:[/bold yellow]
   ?             Show this help screen
@@ -372,7 +624,10 @@ def main(
     ] = 1.0,
     debug: Annotated[bool, typer.Option("--debug", "-d", help="Enable debug mode")] = False,
     no_stats: Annotated[
-        bool, typer.Option("--no-stats", help="Disable real-time stats collection (useful for remote connections)")
+        bool,
+        typer.Option(
+            "--no-stats", help="Disable real-time stats collection (useful for remote connections)"
+        ),
     ] = False,
     version: Annotated[
         Optional[bool], typer.Option("--version", "-v", callback=version_callback, is_eager=True)
@@ -392,7 +647,7 @@ def main(
     is_remote = False
     try:
         base_url = client.api.base_url
-        is_remote = base_url.startswith(('ssh://', 'tcp://', 'http://')) if base_url else False
+        is_remote = base_url.startswith(("ssh://", "tcp://", "http://")) if base_url else False
         if is_remote and debug:
             console.print(f"[yellow]Detected remote Docker connection: {base_url}[/yellow]")
             console.print("[yellow]Using optimized polling mode for stats collection...[/yellow]")
@@ -409,21 +664,55 @@ def main(
         while not should_quit.is_set():
             try:
                 key = readchar.readkey()
-                if key == readchar.key.CTRL_C or key.lower() == "q":
+
+                if key == readchar.key.CTRL_C:
+                    should_quit.set()
+                    continue
+
+                if app_state.filter_typing:
+                    if key == readchar.key.ENTER:
+                        app_state.confirm_filter()
+                    elif key == readchar.key.ESC:
+                        app_state.clear_filter()
+                    elif key == readchar.key.BACKSPACE:
+                        app_state.backspace_filter()
+                    elif len(key) == 1 and key.isprintable():
+                        app_state.append_filter_char(key)
+                    continue
+
+                if key.lower() == "q":
                     should_quit.set()
                 elif key in (readchar.key.UP, "k"):
-                    app_state.move_selection(-1)
+                    if app_state.project_mode:
+                        app_state.move_project_selection(-1)
+                    else:
+                        app_state.move_selection(-1)
                 elif key in (readchar.key.DOWN, "j"):
-                    app_state.move_selection(1)
+                    if app_state.project_mode:
+                        app_state.move_project_selection(1)
+                    else:
+                        app_state.move_selection(1)
                 elif key == readchar.key.PAGE_UP:
                     app_state.scroll_project_view(-1)
                 elif key == readchar.key.PAGE_DOWN:
                     app_state.scroll_project_view(1)
+                elif key == "/":
+                    app_state.start_filter_typing()
+                elif key.lower() == "p":
+                    app_state.toggle_project_mode()
                 elif key == "?":
                     live.stop()
                     console.clear(home=True)
                     show_help_screen()
                     live.start(refresh=True)
+                elif app_state.project_mode:
+                    project_name = app_state.get_selected_project_name()
+                    if project_name:
+                        containers = app_state.get_containers_in_project(project_name)
+                        if key.lower() == "r":
+                            run_bulk_docker_command(live, "restart", containers, project_name)
+                        elif key.lower() == "x":
+                            run_bulk_docker_command(live, "stop", containers, project_name)
                 else:
                     container = app_state.get_selected_container()
                     if container:
@@ -453,6 +742,11 @@ def main(
                                 ["docker", "exec", "-it", container["id"], "/bin/sh"],
                                 container["name"],
                             )
+                        elif key.lower() == "i":
+                            live.stop()
+                            console.clear(home=True)
+                            show_detail_screen(container)
+                            live.start(refresh=True)
             except KeyboardInterrupt:
                 should_quit.set()
             except Exception as e:

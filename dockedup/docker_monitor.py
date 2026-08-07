@@ -46,7 +46,7 @@ class ContainerMonitor:
         """Check if this is a remote Docker connection (SSH, TCP)."""
         try:
             base_url = self.client.api.base_url
-            return base_url.startswith(('ssh://', 'tcp://', 'http://')) if base_url else False
+            return base_url.startswith(("ssh://", "tcp://", "http://")) if base_url else False
         except Exception:
             return False
 
@@ -63,46 +63,62 @@ class ContainerMonitor:
 
         while retry_count <= max_retries and not self.stop_event.is_set():
             try:
-                logger.debug(f"Starting stats collection for container {container_id[:12]} (attempt {retry_count + 1})")
+                logger.debug(
+                    f"Starting stats collection for container {container_id[:12]} (attempt {retry_count + 1})"
+                )
 
                 # For remote connections, use non-streaming stats with polling
                 if self._is_remote_connection:
                     while not self.stop_event.is_set():
                         with self.lock:
                             if container_id not in self.containers:
-                                logger.debug(f"Container {container_id[:12]} removed during stats collection")
+                                logger.debug(
+                                    f"Container {container_id[:12]} removed during stats collection"
+                                )
                                 return
 
                         try:
                             # Get single stats snapshot (stream=False)
-                            stats = self.client.api.stats(container=container_id, stream=False, decode=True)
+                            stats = self.client.api.stats(
+                                container=container_id, stream=False, decode=True
+                            )
 
                             with self.lock:
                                 if container_id in self.containers:
-                                    self.containers[container_id]["cpu"] = calculate_cpu_percent(stats)
+                                    self.containers[container_id]["cpu"] = calculate_cpu_percent(
+                                        stats
+                                    )
                                     self.containers[container_id]["memory"] = format_memory_stats(
                                         stats.get("memory_stats", {})
                                     )
                                 else:
-                                    logger.debug(f"Container {container_id[:12]} removed during stats collection")
+                                    logger.debug(
+                                        f"Container {container_id[:12]} removed during stats collection"
+                                    )
                                     return
 
                             # Poll interval for remote connections (reduce network overhead)
                             time.sleep(2.0)
 
                         except (IncompleteRead, ConnectionError, BrokenPipeError) as e:
-                            logger.debug(f"Network error getting stats for {container_id[:12]}: {e}")
+                            logger.debug(
+                                f"Network error getting stats for {container_id[:12]}: {e}"
+                            )
                             # Don't remove container, just retry after delay
                             time.sleep(1.0)
                             continue
 
                 else:
                     # Local connection: use streaming stats
-                    stats_stream = self.client.api.stats(container=container_id, stream=True, decode=True)
+                    stats_stream = self.client.api.stats(
+                        container=container_id, stream=True, decode=True
+                    )
 
                     for stats in stats_stream:
                         if self.stop_event.is_set():
-                            logger.debug(f"Stop event set, ending stats collection for {container_id[:12]}")
+                            logger.debug(
+                                f"Stop event set, ending stats collection for {container_id[:12]}"
+                            )
                             return
 
                         with self.lock:
@@ -112,7 +128,9 @@ class ContainerMonitor:
                                     stats.get("memory_stats", {})
                                 )
                             else:
-                                logger.debug(f"Container {container_id[:12]} removed during stats collection")
+                                logger.debug(
+                                    f"Container {container_id[:12]} removed during stats collection"
+                                )
                                 return
 
                 # If we got here without exception, stats collection completed successfully
@@ -218,6 +236,7 @@ class ContainerMonitor:
             state = container_info.get("State", {})
             health = state.get("Health", {})
             config = container_info.get("Config", {})
+            host_config = container_info.get("HostConfig", {})
             network_settings = container_info.get("NetworkSettings", {})
 
             project_name = get_compose_project_name(config.get("Labels", {}))
@@ -226,6 +245,11 @@ class ContainerMonitor:
             status_display, health_display = format_status(
                 state.get("Status", "unknown"), health.get("Status")
             )
+
+            mounts = [
+                f"{m.get('Source', '?')} -> {m.get('Destination', '?')} ({m.get('Mode', '')})"
+                for m in container_info.get("Mounts", [])
+            ]
 
             with self.lock:
                 existing_stats = self.containers.get(container_id, {})
@@ -236,10 +260,17 @@ class ContainerMonitor:
                     "status": status_display,
                     "health": health_display,
                     "started_at": parse_docker_time(state.get("StartedAt")),
+                    "created": container_info.get("Created"),
                     "ports": format_ports(network_settings.get("Ports", {})),
                     "project": project_name,
                     "cpu": existing_stats.get("cpu", "[grey50]—[/grey50]"),
                     "memory": existing_stats.get("memory", "[grey50]—[/grey50]"),
+                    "image": config.get("Image", ""),
+                    "command": " ".join(config.get("Cmd") or []),
+                    "entrypoint": " ".join(config.get("Entrypoint") or []),
+                    "mounts": mounts,
+                    "networks": list(network_settings.get("Networks", {}).keys()),
+                    "restart_policy": host_config.get("RestartPolicy", {}).get("Name", "no"),
                 }
 
             is_running = state.get("Status") == "running"
